@@ -764,7 +764,7 @@ describe("unknown event type", () => {
   it("returns state unchanged for unknown event types (forward compatibility)", () => {
     const state = initialState();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const event = { ...baseEvent(1), type: "some.future.event", data: { anything: "goes" } } as unknown as VPPEvent;
+    const event = { ...baseEvent(1), type: "some.future.event", data: { anything: "goes" } as any } as unknown as VPPEvent;
 
     const next = replayReducer(state, event);
     expect(next).toBe(state);
