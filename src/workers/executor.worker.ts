@@ -24,7 +24,7 @@
  *   { type: 'error', error: SerializedError }   — execution threw
  */
 
-import type { VPPEvent } from "../../docs/event-schema";
+import type { VPPEvent, ConsoleErrorEvent } from "../../docs/event-schema";
 import type { ExecutorMessage, ExecutorResult, RuntimeState } from "./executor.types";
 import { serialiseValue } from "../lib/runtime-vp";
 
@@ -64,6 +64,8 @@ const state: RuntimeState = {
   reactionIdCounter: 0,
   awaitedPromises: new Map(),
   sourceMap: new Map(),
+  unhandledRejections: new Set(),
+  unhandledRejectionMeta: new Map(),
 };
 
 let entryIdCounter = 0;
@@ -80,6 +82,47 @@ function emitDone(): void {
   // Defer by one macrotask so any pending microtasks (promise continuations)
   // have a chance to emit their VP events before we tell the host we're done.
   setTimeout(() => {
+    // Emit error.unhandled for every rejected promise that never got a handler.
+    // The unhandledRejections Set is populated by __vp_promise_reject and
+    // __vp_promise_executor whenever a promise is settled as rejected without a handler.
+    for (const promiseId of state.unhandledRejections) {
+      const settleEvent = state.eventLog.find(
+        (e) => e.type === "promise.settle" && e.data.promiseId === promiseId
+      ) as { data: { promiseId: string; reason: unknown } } | undefined;
+      if (!settleEvent) continue;
+
+      const meta = state.unhandledRejectionMeta.get(promiseId);
+      const reasonSer = settleEvent.data.reason;
+
+      // Emit console.error so the Console panel shows the error
+      const consoleErrEvent: ConsoleErrorEvent = {
+        type: "console.error",
+        seq: ++state.seq,
+        timestamp: now(),
+        data: {
+          method: "error",
+          args: [`Unhandled Promise Rejection: ${meta?.message ?? String(reasonSer)}`]
+        }
+      };
+      state.eventLog.push(consoleErrEvent);
+      self.postMessage({ type: "event", event: consoleErrEvent });
+
+      // Emit the canonical error.unhandled event
+      const unhandledEvent: VPPEvent = {
+        type: "error.unhandled",
+        seq: ++state.seq,
+        timestamp: now(),
+        data: {
+          promiseId,
+          reason: reasonSer,
+          message: meta?.message ?? String(reasonSer),
+          stack: meta?.stack ?? "",
+        },
+      };
+      state.eventLog.push(unhandledEvent);
+      self.postMessage({ type: "event", event: unhandledEvent });
+    }
+
     self.postMessage({ type: "done", eventLog: state.eventLog } satisfies ExecutorResult);
   }, 0);
 }
@@ -214,6 +257,8 @@ function transformSnippet(source: string): TransformResult {
     });
 
     // ── PASS 3: .then / .catch / .finally ───────────────────────────────────
+    // Abordagem A fix: transform promise.then(fn) → __vp_then(p.then(), ...) to execute
+    // callbacks SYNCHRONOUSLY (worker has no microtask queue).
     traverse(ast, {
       MemberExpression(path: NodePath<t.MemberExpression>) {
         if (done.has(path.node)) return;
@@ -228,15 +273,47 @@ function transformSnippet(source: string): TransformResult {
         done.add(parent);
         done.add(path.node);
 
-        const promiseId = newPromiseId(); // TODO: wire to actual tracked promise id
+        const promiseId = newPromiseId();
         const reactionId = newReactionId();
-        parent.arguments.unshift(
-          vpCall("reaction_register", [
+        const method = prop.name;
+
+        if (method === "then") {
+          // Transform: p.then(onFulfilled, onRejected)
+          //   → __vp_then(p, __vp_reaction_register(...), onFulfilled, onRejected)
+          //
+          // __vp_then calls p.then(onFulfilled) internally and executes onFulfilled
+          // SYNCHRONOUSLY so console.output is emitted immediately (worker has no microtask
+          // queue to defer into). It returns p.then() so promise chains continue to work.
+          const promiseObj = path.node.object;
+          const onFulfilled = parent.arguments[0] ?? t.identifier("undefined");
+          const onRejected = parent.arguments[1] ?? t.identifier("undefined");
+
+          const registrationCall = vpCall("reaction_register", [
             t.stringLiteral(promiseId),
-            t.stringLiteral(prop.name),
+            t.stringLiteral(method),
             t.stringLiteral(reactionId),
-          ])
-        );
+          ]);
+
+          // Replace entire call: p.then(...) → __vp_then(p, registrationResult, onFulfilled, onRejected)
+          path.replaceWith(
+            t.callExpression(t.identifier("__vp_then"), [
+              promiseObj,          // p — the promise object
+              registrationCall,    // reactionId from __vp_reaction_register
+              onFulfilled,        // onFulfilled callback
+              onRejected,         // onRejected callback
+            ])
+          );
+          path.skip();
+        } else {
+          // .catch / .finally — prepend reaction_register as first argument (existing approach)
+          parent.arguments.unshift(
+            vpCall("reaction_register", [
+              t.stringLiteral(promiseId),
+              t.stringLiteral(method),
+              t.stringLiteral(reactionId),
+            ])
+          );
+        }
       },
     });
 
@@ -404,6 +481,60 @@ function transformSnippet(source: string): TransformResult {
       },
     });
 
+    // ── PASS 6: Promise.reject(...) → __vp_promise_reject ──────────────────
+    traverse(ast, {
+      CallExpression(path) {
+        const callee = path.node.callee;
+        if (
+          t.isMemberExpression(callee) &&
+          t.isIdentifier(callee.object, { name: "Promise" }) &&
+          t.isIdentifier(callee.property, { name: "reject" })
+        ) {
+          // Guard: skip if already wrapped
+          if (t.isSequenceExpression(path.parent) &&
+              t.isStringLiteral(path.parent.expressions[0]) &&
+              path.parent.expressions[0].value === "__vp_marker_promise_reject") return;
+          // Guard: skip if nested inside another call's arguments
+          if (t.isCallExpression(path.parent) && path.parent.callee !== path.node) return;
+          const promiseId = newPromiseId();
+          path.replaceWith(
+            t.sequenceExpression([
+              t.stringLiteral("__vp_marker_promise_reject"),
+              vpCall("promise_reject", [
+                t.stringLiteral(promiseId),
+                ...(path.node.arguments as t.Expression[]),
+              ]),
+            ])
+          );
+          path.skip();
+        }
+      },
+    });
+
+    // ── PASS 7: new Promise(executor) — wrap executor to track rejections ──
+    traverse(ast, {
+      NewExpression(path) {
+        const callee = path.node.callee;
+        if (!t.isIdentifier(callee, { name: "Promise" })) return;
+        const args = path.node.arguments;
+        if (args.length === 0) return;
+        const executor = args[0];
+        // Handle FunctionExpression and ArrowFunctionExpression (covers async too since async is a modifier)
+        if (!t.isFunctionExpression(executor) && !t.isArrowFunctionExpression(executor)) return;
+
+        const promiseId = newPromiseId();
+
+        // Wrap: new Promise((resolve, reject) => { ... })
+        //   → new Promise(__vp_promise_executor(__vp, (resolve, reject) => { ... }, promiseId))
+        const wrappedExecutor = t.callExpression(
+          t.identifier("__vp_promise_executor"),
+          [t.identifier("__vp"), executor, t.stringLiteral(promiseId)]
+        );
+        args[0] = wrappedExecutor;
+        path.skip();
+      },
+    });
+
     const generated = generator(ast, {
       comments: true,
       compact: false,
@@ -498,6 +629,64 @@ function __vp_reaction_enqueue(reactionId, promiseId, queuePosition, queueDepth)
   __vp.postMessage({ type: 'event', event });
 }
 
+// __vp_then(promise, registrationResult, onFulfilled, onRejected)
+// Abordagem A fix: executes .then() callbacks SYNCHRONOUSLY (worker has no microtask queue).
+// 1. Calls promise.then(onFulfilled, onRejected) internally, using a wrapper callback that:
+//    a. Calls the user's onFulfilled SYNCHRONOUSLY → emits reaction.run + console.output
+//    b. Returns the result so the promise resolves correctly
+// 2. Returns the result of promise.then(...) so promise chains continue to work
+function __vp_then(promise, _registrationResult, onFulfilled, onRejected) {
+  const __vp_reactionId = _registrationResult;
+
+  // Call promise.then(onFulfilled, onRejected) internally to keep promise chains working.
+  // We wrap the callbacks to execute the user's onFulfilled SYNCHRONOUSLY.
+  // The worker has no microtask queue, so the microtask would never fire — but we
+  // call the callback right now, synchronously, to emit console.output immediately.
+  const wrappedOnFulfilled = function(__vp_val) {
+    const runEvent = {
+      type: 'reaction.run',
+      seq: __vp_seq(),
+      timestamp: __now(),
+      data: { reactionId: __vp_reactionId, settlementType: 'fulfilled', settlementValue: __serialise(__vp_val) }
+    };
+    __vp.state.eventLog.push(runEvent);
+    __vp.postMessage({ type: 'event', event: runEvent });
+
+    // Execute user's callback SYNCHRONOUSLY — this triggers __vp_console_log calls
+    if (typeof onFulfilled === 'function') {
+      try {
+        return onFulfilled(__vp_val);
+      } catch(__vp_e) {
+        throw __vp_e; // re-throw so promise.reject fires
+      }
+    }
+    return __vp_val;
+  };
+
+  const wrappedOnRejected = function(__vp_err) {
+    const runEvent = {
+      type: 'reaction.run',
+      seq: __vp_seq(),
+      timestamp: __now(),
+      data: { reactionId: __vp_reactionId, settlementType: 'rejected', settlementValue: __serialise(__vp_err) }
+    };
+    __vp.state.eventLog.push(runEvent);
+    __vp.postMessage({ type: 'event', event: runEvent });
+
+    if (typeof onRejected === 'function') {
+      try {
+        return onRejected(__vp_err);
+      } catch(__vp_e2) {
+        throw __vp_e2;
+      }
+    }
+    throw __vp_err;
+  };
+
+  // Call promise.then(...) and return the result so chains like p.then(fn1).then(fn2) work
+  return promise.then(wrappedOnFulfilled, wrappedOnRejected);
+}
+
 // __vp_reaction_run(reactionId, settlementType, settlementValue)
 function __vp_reaction_run(reactionId, settlementType, settlementValue) {
   const event = {
@@ -508,6 +697,90 @@ function __vp_reaction_run(reactionId, settlementType, settlementValue) {
   };
   __vp.state.eventLog.push(event);
   __vp.postMessage({ type: 'event', event });
+}
+
+// __vp_promise_reject(promiseId, reason) — wraps Promise.reject(reason)
+// Emits promise.create + promise.settle(rejected) and tracks the promise as
+// unhandled so emitDone can surface error.unhandled.
+function __vp_promise_reject(promiseId, reason) {
+  // Emit promise.create
+  const createEvent = {
+    type: 'promise.create',
+    seq: __vp_seq(),
+    timestamp: __now(),
+    data: { promiseId, constructor: 'Promise' }
+  };
+  __vp.state.eventLog.push(createEvent);
+  __vp.postMessage({ type: 'event', event: createEvent });
+
+  // Emit promise.settle with state: rejected
+  const reasonSer = __serialise(reason);
+  const settleEvent = {
+    type: 'promise.settle',
+    seq: __vp_seq(),
+    timestamp: __now(),
+    data: { promiseId, state: 'rejected', reason: reasonSer }
+  };
+  __vp.state.eventLog.push(settleEvent);
+  __vp.postMessage({ type: 'event', event: settleEvent });
+
+  // Track as unhandled so emitDone can surface error.unhandled
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  const stack = reason instanceof Error ? (reason.stack ?? '') : '';
+  __vp.state.unhandledRejections.add(promiseId);
+  __vp.state.unhandledRejectionMeta.set(promiseId, { reason: reasonSer, message: msg, stack });
+
+  // Return the actual rejected promise so code can still chain onto it
+  return Promise.reject(reason);
+}
+
+// __vp_promise_executor(__vp, executor, promiseId)
+// Wraps the executor passed to new Promise(executor) so that:
+// 1. Sync throws are caught and emit error.throw
+// 2. Calls to the reject callback emit promise.settle(rejected) and track as unhandled
+function __vp_promise_executor(__vp, executor, promiseId) {
+  return function(__vp_resolve, __vp_reject) {
+    // Wrap reject: any rejection should emit promise.settle and be tracked
+    const wrappedReject = function(__vp_reason) {
+      const reasonSer = __serialise(__vp_reason);
+      // Emit promise.settle with state: rejected
+      const settleEvent = {
+        type: 'promise.settle',
+        seq: __vp_seq(),
+        timestamp: __now(),
+        data: { promiseId, state: 'rejected', reason: reasonSer }
+      };
+      __vp.state.eventLog.push(settleEvent);
+      __vp.postMessage({ type: 'event', event: settleEvent });
+
+      // Track as unhandled
+      const msg = __vp_reason instanceof Error ? __vp_reason.message : String(__vp_reason);
+      const stack = __vp_reason instanceof Error ? (__vp_reason.stack ?? '') : '';
+      __vp.state.unhandledRejections.add(promiseId);
+      __vp.state.unhandledRejectionMeta.set(promiseId, { reason: reasonSer, message: msg, stack });
+
+      // Call original reject
+      return __vp_reject(__vp_reason);
+    };
+
+    try {
+      return executor(__vp_resolve, wrappedReject);
+    } catch (__vp_err) {
+      // Sync throw inside executor → emit error.throw
+      const msg = __vp_err instanceof Error ? __vp_err.message : String(__vp_err);
+      const s = __vp_err instanceof Error ? (__vp_err.stack ?? '') : '';
+      const throwEvent = {
+        type: 'error.throw',
+        seq: __vp_seq(),
+        timestamp: __now(),
+        data: { frameId: promiseId, error: __serialise(__vp_err), message: msg, stack: s }
+      };
+      __vp.state.eventLog.push(throwEvent);
+      __vp.postMessage({ type: 'event', event: throwEvent });
+      // Re-throw so the promise rejects normally
+      throw __vp_err;
+    }
+  };
 }
 
 // __vp_await(promisedValue, awaitExpr, frameId, promiseId)
@@ -662,6 +935,8 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
   state.promiseIdCounter = 0;
   state.reactionIdCounter = 0;
   state.awaitedPromises = new Map();
+  state.unhandledRejections = new Set();
+  state.unhandledRejectionMeta = new Map();
 
   // Transform with Babel
   const result = transformSnippet(code);

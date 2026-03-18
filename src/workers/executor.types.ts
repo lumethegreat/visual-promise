@@ -112,6 +112,10 @@ export interface RuntimeState {
   frameStack: string[];
   promiseIdCounter: number;
   reactionIdCounter: number;
+  /** Tracks promiseIds of rejected promises created via Promise.reject() or new Promise with no handler. */
+  unhandledRejections: Set<string>;
+  /** Serialised data for each unhandled rejection: promiseId → { reason, message, stack } */
+  unhandledRejectionMeta: Map<string, { reason: unknown; message: string; stack: string }>;
   awaitedPromises: Map<string, string>; // promiseId → frameId
   // Source map for frame metadata
   sourceMap: SourceMap;
