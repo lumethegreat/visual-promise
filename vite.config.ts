@@ -12,4 +12,16 @@ export default defineConfig({
   worker: {
     format: 'es',
   },
+  define: {
+    // Polyfill process.env for deps that use it (e.g. Babel helpers)
+    'process.env.NODE_ENV': JSON.stringify(
+      process.env.NODE_ENV ?? 'development',
+    ),
+    global: 'globalThis',
+  },
+  build: {
+    commonjsOptions: {
+      transformMixedEsModules: true,
+    },
+  },
 });

@@ -110,8 +110,14 @@ export function useExecution(): UseExecutionReturn {
 
   // ── Worker lifecycle ───────────────────────────────────────────────────────
   useEffect(() => {
-    const worker = workerRef.current;
-    if (!worker) return;
+    // Create the worker eagerly so the listener is always attached before
+    // any execute() call can post messages. Refs don't trigger re-renders,
+    // so a worker created lazily inside execute() would miss the listener.
+    const worker = new Worker(
+      new URL("../workers/executor.worker.ts", import.meta.url),
+      { type: "module" },
+    );
+    workerRef.current = worker;
 
     const onMessage = (e: MessageEvent) => {
       const result = e.data;
@@ -136,13 +142,9 @@ export function useExecution(): UseExecutionReturn {
     };
 
     worker.addEventListener("message", onMessage);
-    return () => worker.removeEventListener("message", onMessage);
-  }, []);
 
-  // ── Cleanup on unmount ───────────────────────────────────────────────────
-  useEffect(() => {
     return () => {
-      workerRef.current?.terminate();
+      worker.terminate();
       workerRef.current = null;
     };
   }, []);
@@ -173,12 +175,21 @@ export function useExecution(): UseExecutionReturn {
     // warning or ok — proceed
     setStatus("running");
 
-    // Lazy-create worker on first execute call
+    // Worker is created eagerly by useEffect, but reset() can terminate it.
+    // Recreate if needed.
     if (workerRef.current === null) {
-      workerRef.current = new Worker(
+      const w = new Worker(
         new URL("../workers/executor.worker.ts", import.meta.url),
         { type: "module" },
       );
+      // Re-attach the same listener pattern
+      w.addEventListener("message", (e: MessageEvent) => {
+        const result = e.data;
+        if (result.type === "event") { dispatch(result.event as VPPEvent); return; }
+        if (result.type === "done") { setStatus("done"); return; }
+        if (result.type === "error") { setStatus("error"); setExecutionError(result.error); return; }
+      });
+      workerRef.current = w;
     }
 
     const worker = workerRef.current;
@@ -191,7 +202,7 @@ export function useExecution(): UseExecutionReturn {
    */
   const reset = useCallback(() => {
     workerRef.current?.terminate();
-    workerRef.current = null;
+    workerRef.current = null;  // Effect won't recreate since it has [] deps — execute() handles it
     setStatus("idle");
     setValidationResult(null);
     setExecutionError(null);
