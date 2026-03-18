@@ -1,0 +1,373 @@
+/* Reset + base */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #1e1e2e;
+  --bg-panel: #181825;
+  --bg-hover: #313244;
+  --border: #45475a;
+  --text: #cdd6f4;
+  --text-muted: #6c7086;
+  --accent: #89b4fa;
+  --green: #a6e3a1;
+  --yellow: #f9e2af;
+  --red: #f38ba8;
+  --purple: #cba6f7;
+}
+
+/* Layout */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.app-header h1 {
+  font-size: 1.1rem;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.app-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.editor-pane {
+  flex: 1;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+
+.inspector-pane {
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Editor */
+.cm-editor {
+  height: 100% !important;
+}
+
+/* Step controls */
+.step-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.step-controls button {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.step-controls button:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.step-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.step-indicator {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  max-width: 200px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+
+.step-controls select {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.run-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn-run {
+  background: var(--green) !important;
+  color: var(--bg) !important;
+  font-weight: bold;
+}
+
+.btn-reset {
+  font-size: 0.8rem;
+}
+
+/* Tabs */
+.tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  flex: 1;
+  padding: 0.5rem;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab-content {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Panels */
+.panel {
+  padding: 0.75rem;
+}
+
+.panel h3 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.panel ul {
+  list-style: none;
+}
+
+.panel li {
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+/* Frame colors */
+.frame-active {
+  color: var(--green);
+}
+
+.frame-suspended {
+  color: var(--yellow);
+}
+
+.frame-exited {
+  color: var(--text-muted);
+}
+
+.frame-badge {
+  font-size: 0.7rem;
+  padding: 0.1em 0.4em;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  margin-left: 0.4rem;
+}
+
+/* Promise colors */
+.promise-pending {
+  color: var(--text-muted);
+}
+
+.promise-fulfilled {
+  color: var(--green);
+}
+
+.promise-rejected {
+  color: var(--red);
+}
+
+.promise-state {
+  font-size: 0.75rem;
+  margin-left: 0.4rem;
+}
+
+/* Console */
+.console-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.console-panel h3 {
+  flex-shrink: 0;
+}
+
+.console-entries {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.console-entry {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.82rem;
+  font-family: monospace;
+  border-bottom: 1px solid var(--border);
+}
+
+.console-entry-log {
+  color: var(--text);
+}
+
+.console-entry-info {
+  color: var(--accent);
+}
+
+.console-entry-warn {
+  color: var(--yellow);
+  background: rgba(249, 226, 175, 0.05);
+}
+
+.console-entry-error {
+  color: var(--red);
+  background: rgba(243, 139, 168, 0.05);
+}
+
+.console-method {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+/* Banner */
+.banner {
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.banner-warning {
+  background: rgba(249, 226, 175, 0.15);
+  color: var(--yellow);
+  border-bottom: 1px solid rgba(249, 226, 175, 0.3);
+}
+
+.banner-error {
+  background: rgba(243, 139, 168, 0.15);
+  color: var(--red);
+  border-bottom: 1px solid rgba(243, 139, 168, 0.3);
+}
+
+/* Empty states */
+.empty {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-style: italic;
+  padding: 0.5rem;
+}
+
+.total-count {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.promise-overview {
+  border-top: 1px solid var(--border);
+  padding: 0.75rem;
+}
+
+.promise-overview h4 {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
+/* Event log inspector */
+.event-log-inspector {
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.event-log-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+}
+
+.event-log-toggle:hover {
+  color: var(--text);
+}
+
+.event-log-list {
+  list-style: none;
+  max-height: 150px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+.event-log-entry {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  display: flex;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.event-index {
+  color: var(--text-muted);
+  min-width: 24px;
+}
+
+.event-type {
+  color: var(--purple);
+}
