@@ -276,6 +276,9 @@ function transformSnippet(source: string): TransformResult {
         const promiseId = newPromiseId();
         const reactionId = newReactionId();
         const method = prop.name;
+        const promiseObj = path.node.object;
+        const onFulfilled = parent.arguments[0] ?? t.identifier("undefined");
+        const onRejected = parent.arguments[1] ?? t.identifier("undefined");
 
         if (method === "then") {
           // Transform: p.then(onFulfilled, onRejected)
@@ -284,18 +287,17 @@ function transformSnippet(source: string): TransformResult {
           // __vp_then calls p.then(onFulfilled) internally and executes onFulfilled
           // SYNCHRONOUSLY so console.output is emitted immediately (worker has no microtask
           // queue to defer into). It returns p.then() so promise chains continue to work.
-          const promiseObj = path.node.object;
-          const onFulfilled = parent.arguments[0] ?? t.identifier("undefined");
-          const onRejected = parent.arguments[1] ?? t.identifier("undefined");
-
           const registrationCall = vpCall("reaction_register", [
             t.stringLiteral(promiseId),
             t.stringLiteral(method),
             t.stringLiteral(reactionId),
           ]);
 
-          // Replace entire call: p.then(...) → __vp_then(p, registrationResult, onFulfilled, onRejected)
-          path.replaceWith(
+          // Replace the ENTIRE CallExpression (p.then(...)), not just the .then MemberExpression.
+          // Using path.parentPath ensures the call's arguments are included in the replacement,
+          // avoiding the bug where arguments were left as trailing args → __vp_then(...)()
+          // caused by replacing only the callee (MemberExpression).
+          path.parentPath.replaceWith(
             t.callExpression(t.identifier("__vp_then"), [
               promiseObj,          // p — the promise object
               registrationCall,    // reactionId from __vp_reaction_register
@@ -304,15 +306,36 @@ function transformSnippet(source: string): TransformResult {
             ])
           );
           path.skip();
-        } else {
-          // .catch / .finally — prepend reaction_register as first argument (existing approach)
-          parent.arguments.unshift(
-            vpCall("reaction_register", [
-              t.stringLiteral(promiseId),
-              t.stringLiteral(method),
-              t.stringLiteral(reactionId),
+        } else if (method === "catch") {
+          // .catch — replace entire CallExpression with __vp_catch(promise, reg, onRejected)
+          const onCatch = parent.arguments[0] ?? t.identifier("undefined");
+          path.parentPath.replaceWith(
+            t.callExpression(t.identifier("__vp_catch"), [
+              promiseObj,
+              vpCall("reaction_register", [
+                t.stringLiteral(promiseId),
+                t.stringLiteral(method),
+                t.stringLiteral(reactionId),
+              ]),
+              onCatch,
             ])
           );
+          path.skip();
+        } else {
+          // .finally — replace entire CallExpression with __vp_finally(promise, reg, onFinally)
+          const onFinally = parent.arguments[0] ?? t.identifier("undefined");
+          path.parentPath.replaceWith(
+            t.callExpression(t.identifier("__vp_finally"), [
+              promiseObj,
+              vpCall("reaction_register", [
+                t.stringLiteral(promiseId),
+                t.stringLiteral(method),
+                t.stringLiteral(reactionId),
+              ]),
+              onFinally,
+            ])
+          );
+          path.skip();
         }
       },
     });
@@ -479,6 +502,37 @@ function transformSnippet(source: string): TransformResult {
           path.skip();
         }
       },
+      // Also intercept console.log passed as a callback value, e.g. .then(console.log).
+      // The above CallExpression visitor only handles console.log(...) (being called),
+      // not console.log (being passed as a value). Replace console.X → fn wrapping __vp_console_log.
+      MemberExpression(path) {
+        if (
+          t.isIdentifier(path.node.object, { name: "console" }) &&
+          t.isIdentifier(path.node.property) &&
+          __consoleMethods.has(path.node.property.name)
+        ) {
+          // Guard: skip if this MemberExpression is the callee of a CallExpression
+          // (that CallExpression would be handled by the CallExpression visitor above)
+          if (t.isCallExpression(path.parent) && path.parent.callee === path.node) return;
+          // Replace: console.log → function(...args) { __vp_console_log("log", ...args); }
+          const methodName = path.node.property.name;
+          path.replaceWith(
+            t.functionExpression(
+              null, // anonymous
+              [t.restElement(t.identifier("__vp_args"))],
+              t.blockStatement([
+                t.expressionStatement(
+                  t.callExpression(t.identifier("__vp_console_log"), [
+                    t.stringLiteral(methodName),
+                    t.spreadElement(t.identifier("__vp_args")),
+                  ])
+                ),
+              ])
+            )
+          );
+          path.skip();
+        }
+      },
     });
 
     // ── PASS 6: Promise.reject(...) → __vp_promise_reject ──────────────────
@@ -638,10 +692,9 @@ function __vp_reaction_enqueue(reactionId, promiseId, queuePosition, queueDepth)
 function __vp_then(promise, _registrationResult, onFulfilled, onRejected) {
   const __vp_reactionId = _registrationResult;
 
-  // Call promise.then(onFulfilled, onRejected) internally to keep promise chains working.
-  // We wrap the callbacks to execute the user's onFulfilled SYNCHRONOUSLY.
-  // The worker has no microtask queue, so the microtask would never fire — but we
-  // call the callback right now, synchronously, to emit console.output immediately.
+  // Wrap user callbacks so they execute SYNCHRONOUSLY.
+  // The worker has no microtask queue — we call the callback right now
+  // to emit console.output immediately. Errors are caught and emitted.
   const wrappedOnFulfilled = function(__vp_val) {
     const runEvent = {
       type: 'reaction.run',
@@ -652,12 +705,22 @@ function __vp_then(promise, _registrationResult, onFulfilled, onRejected) {
     __vp.state.eventLog.push(runEvent);
     __vp.postMessage({ type: 'event', event: runEvent });
 
-    // Execute user's callback SYNCHRONOUSLY — this triggers __vp_console_log calls
     if (typeof onFulfilled === 'function') {
       try {
         return onFulfilled(__vp_val);
       } catch(__vp_e) {
-        throw __vp_e; // re-throw so promise.reject fires
+        // Emit error synchronously so it appears before emitDone()
+        const msg = __vp_e instanceof Error ? __vp_e.message : String(__vp_e);
+        const s = __vp_e instanceof Error ? (__vp_e.stack ?? '') : '';
+        const errEvent = {
+          type: 'error.throw',
+          seq: __vp_seq(),
+          timestamp: __now(),
+          data: { frameId: __vp_reactionId, error: __serialise(__vp_e), message: msg, stack: s }
+        };
+        __vp.state.eventLog.push(errEvent);
+        __vp.postMessage({ type: 'event', event: errEvent });
+        throw __vp_e;
       }
     }
     return __vp_val;
@@ -677,14 +740,88 @@ function __vp_then(promise, _registrationResult, onFulfilled, onRejected) {
       try {
         return onRejected(__vp_err);
       } catch(__vp_e2) {
+        const msg = __vp_e2 instanceof Error ? __vp_e2.message : String(__vp_e2);
+        const s = __vp_e2 instanceof Error ? (__vp_e2.stack ?? '') : '';
+        const errEvent = {
+          type: 'error.throw',
+          seq: __vp_seq(),
+          timestamp: __now(),
+          data: { frameId: __vp_reactionId, error: __serialise(__vp_e2), message: msg, stack: s }
+        };
+        __vp.state.eventLog.push(errEvent);
+        __vp.postMessage({ type: 'event', event: errEvent });
         throw __vp_e2;
       }
     }
     throw __vp_err;
   };
 
-  // Call promise.then(...) and return the result so chains like p.then(fn1).then(fn2) work
   return promise.then(wrappedOnFulfilled, wrappedOnRejected);
+}
+
+// __vp_catch(promise, registrationResult, onRejected)
+// Mirrors __vp_then for .catch(): executes user's onRejected SYNCHRONOUSLY.
+function __vp_catch(promise, _registrationResult, onRejected) {
+  const __vp_reactionId = _registrationResult;
+
+  const wrappedOnRejected = function(__vp_err) {
+    const runEvent = {
+      type: 'reaction.run',
+      seq: __vp_seq(),
+      timestamp: __now(),
+      data: { reactionId: __vp_reactionId, settlementType: 'rejected', settlementValue: __serialise(__vp_err) }
+    };
+    __vp.state.eventLog.push(runEvent);
+    __vp.postMessage({ type: 'event', event: runEvent });
+
+    if (typeof onRejected === 'function') {
+      try {
+        return onRejected(__vp_err);
+      } catch(__vp_e2) {
+        const msg = __vp_e2 instanceof Error ? __vp_e2.message : String(__vp_e2);
+        const s = __vp_e2 instanceof Error ? (__vp_e2.stack ?? '') : '';
+        const errEvent = {
+          type: 'error.throw',
+          seq: __vp_seq(),
+          timestamp: __now(),
+          data: { frameId: __vp_reactionId, error: __serialise(__vp_e2), message: msg, stack: s }
+        };
+        __vp.state.eventLog.push(errEvent);
+        __vp.postMessage({ type: 'event', event: errEvent });
+        throw __vp_e2;
+      }
+    }
+    throw __vp_err;
+  };
+
+  return promise.then(undefined, wrappedOnRejected);
+}
+
+// __vp_finally(promise, registrationResult, onFinally)
+// Mirrors __vp_then for .finally(): executes user's onFinally SYNCHRONOUSLY.
+function __vp_finally(promise, _registrationResult, onFinally) {
+  const __vp_reactionId = _registrationResult;
+
+  const wrappedOnFinally = function(__vp_val) {
+    // .finally() doesn't relay a value — it passes through the settlement.
+    // We still emit reaction.run for the visualizer.
+    const runEvent = {
+      type: 'reaction.run',
+      seq: __vp_seq(),
+      timestamp: __now(),
+      data: { reactionId: __vp_reactionId, settlementType: 'fulfilled', settlementValue: __serialise(__vp_val) }
+    };
+    __vp.state.eventLog.push(runEvent);
+    __vp.postMessage({ type: 'event', event: runEvent });
+
+    if (typeof onFinally === 'function') {
+      onFinally();
+    }
+    // Re-throw if the original rejection wasn't handled
+    if (__vp_val instanceof Error) throw __vp_val;
+  };
+
+  return promise.then(wrappedOnFinally, wrappedOnFinally);
 }
 
 // __vp_reaction_run(reactionId, settlementType, settlementValue)
@@ -886,8 +1023,22 @@ function __vp_frame_exit(frameId, normal, returnVal) {
 }
 
 // __vp_error_catch(frameId)
-function __vp_error_catch(frameId) {
-  // Error catch emitted by try/catch block at runtime
+function __vp_error_catch(frameId, error) {
+  // Emitted by the try/catch wrapper inserted around arrow-function bodies (Pass 4).
+  // This fires for ANY throw inside an arrow function — including throws that are
+  // ALSO caught by __vp_then/__vp_catch/__vp_finally wrappers.
+  // We emit the error event so the VP app can display it.
+  const msg = error instanceof Error ? error.message : String(error);
+  const s = error instanceof Error ? (error.stack ?? '') : '';
+  const errEvent = {
+    type: 'error.throw',
+    seq: __vp_seq(),
+    timestamp: __now(),
+    data: { frameId, error: __serialise(error), message: msg, stack: s }
+  };
+  __vp.state.eventLog.push(errEvent);
+  __vp.postMessage({ type: 'event', event: errEvent });
+  throw error; // re-throw so promise chains / outer catchers work correctly
 }
 
 // __vp_try_finally()
@@ -966,29 +1117,31 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
     const returnValue = execFn(bridge);
 
     // If the top-level code returns a promise (async IIFE, or top-level async),
-    // wait for it to settle before sending done.
+    // use .then() so emitDone() fires as a MICROTask — after all __vp_then
+    // microtasks (callbacks scheduled via promise.then()) have drained.
+    // This ensures console.output events from .then() callbacks reach the main
+    // thread before we send "done".
     if (returnValue && typeof (returnValue as Promise<unknown>).then === "function") {
-      await (returnValue as Promise<unknown>).catch((err: unknown) => {
-        const msg = errMessage(err);
-        const s = err instanceof Error ? (err.stack ?? "") : "";
-        emit({
-          type: "error.throw",
-          seq: ++state.seq,
-          timestamp: now(),
-          data: { frameId: "top-level", error: serialiseValue(err), message: msg, stack: s },
-        } as VPPEvent);
-      });
+      (returnValue as Promise<unknown>)
+        .then(() => {
+          emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } });
+          emitDone();
+        })
+        .catch((err: unknown) => {
+          const msg = errMessage(err);
+          const s = err instanceof Error ? (err.stack ?? "") : "";
+          emit({
+            type: "error.throw",
+            seq: ++state.seq,
+            timestamp: now(),
+            data: { frameId: "top-level", error: serialiseValue(err), message: msg, stack: s },
+          } as VPPEvent);
+        });
+    } else {
+      // Synchronous code: emitDone immediately
+      emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } });
+      emitDone();
     }
-
-    // Emit execution.end (normal)
-    emit({
-      type: "execution.end",
-      seq: ++state.seq,
-      timestamp: now(),
-      data: { ok: true },
-    } as VPPEvent);
-
-    emitDone();
   } catch (err: unknown) {
     const msg = errMessage(err);
     const s = err instanceof Error ? (err.stack ?? "") : "";
