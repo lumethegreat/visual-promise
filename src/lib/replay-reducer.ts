@@ -22,6 +22,7 @@ import type {
   MicrotaskQueue,
   MicrotaskQueueEntry,
 } from "../../docs/replay-state";
+import { createInitialReplayState } from "../../docs/replay-state";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -52,9 +53,11 @@ export function replayReducer(
   state: ReplayState,
   action: VPPEvent,
 ): ReplayState {
-  // Start from a shallow copy so we only replace the fields that actually change
+  // Always track the event log and step index — every dispatched event is recorded.
   const newState: ReplayState = {
     ...state,
+    eventLog: [...state.eventLog, action],
+    currentStepIndex: state.currentStepIndex + 1,
     promises: state.promises,
     reactions: state.reactions,
     frameStack: state.frameStack,
@@ -71,8 +74,10 @@ export function replayReducer(
 
     case "execution.start":
     case "execution.end":
-      // Marker events — no state change needed
-      return state;
+      // Marker events — state change is already applied at the top (eventLog + currentStepIndex).
+      // execution.end with ok===false is tracked via error.unhandled from the worker.
+      newState.lastEvent = action;
+      return newState;
 
     // ── Promise lifecycle ─────────────────────────────────────────────────
 
@@ -365,5 +370,13 @@ export function replayReducer(
       // This allows the system to evolve without breaking older reducer versions.
       return state;
     }
+
+    // ── Control events ──────────────────────────────────────────────────
+
+    // __RESET__ is not a real VP event — used by useExecution to reset state.
+    // Placed here (before default) to avoid the VPPEvent type mismatch.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    case "__RESET__" as any:
+      return createInitialReplayState(state.eventLog);
   }
 }

@@ -662,7 +662,7 @@ describe("error.catch", () => {
 // ─── Execution lifecycle ────────────────────────────────────────────────────
 
 describe("execution.start / execution.end", () => {
-  it("execution.start returns state unchanged (marker event)", () => {
+  it("execution.start tracks the event in eventLog and lastEvent but changes no domain state", () => {
     const state = initialState();
     const event = makeEvent({
       ...baseEvent(1),
@@ -671,10 +671,17 @@ describe("execution.start / execution.end", () => {
     });
 
     const next = replayReducer(state, event);
-    expect(next).toBe(state);
+    // eventLog and lastEvent change; domain state stays empty
+    expect(next.eventLog).toHaveLength(1);
+    expect(next.eventLog[0]).toBe(event);
+    expect(next.lastEvent).toBe(event);
+    expect(next.currentStepIndex).toBe(1);
+    expect(next.promises).toEqual(new Map());
+    expect(next.frameStack).toHaveLength(0);
+    expect(next.reactions).toEqual(new Map());
   });
 
-  it("execution.end returns state unchanged (marker event)", () => {
+  it("execution.end tracks the event in eventLog and lastEvent but changes no domain state", () => {
     const state = initialState();
     const event = makeEvent({
       ...baseEvent(10),
@@ -683,10 +690,13 @@ describe("execution.start / execution.end", () => {
     });
 
     const next = replayReducer(state, event);
-    expect(next).toBe(state);
+    expect(next.eventLog).toHaveLength(1);
+    expect(next.lastEvent).toBe(event);
+    expect(next.currentStepIndex).toBe(1);
+    expect(next.executionFailed).toBe(false);
   });
 
-  it("execution.end with ok=false does not flip executionFailed by itself", () => {
+  it("execution.end with ok=false does not set executionFailed (that comes from error.unhandled)", () => {
     const state = initialState();
     const event = makeEvent({
       ...baseEvent(10),
@@ -695,8 +705,10 @@ describe("execution.start / execution.end", () => {
     });
 
     const next = replayReducer(state, event);
+    // executionFailed is only set by error.unhandled, not execution.end
     expect(next.executionFailed).toBe(false);
-    expect(next).toBe(state);
+    expect(next.lastEvent).toBe(event);
+    expect(next.eventLog).toHaveLength(1);
   });
 });
 
