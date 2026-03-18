@@ -422,9 +422,9 @@ export function deriveUIStepInfo(state: ReplayState): UIStepInfo {
     totalSteps,
     progressPercent,
     nextEvent:
-      currentStepIndex < totalSteps ? eventLog[currentStepIndex] : null,
+      currentStepIndex < totalSteps ? (eventLog[currentStepIndex] ?? null) : null,
     currentEvent:
-      currentStepIndex > 0 ? eventLog[currentStepIndex - 1] : null,
+      currentStepIndex > 0 ? (eventLog[currentStepIndex - 1] ?? null) : null,
     isAtStart: currentStepIndex === 0,
     isAtEnd: currentStepIndex === totalSteps,
   };
