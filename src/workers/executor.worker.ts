@@ -77,7 +77,11 @@ function emit(event: VPPEvent): void {
 }
 
 function emitDone(): void {
-  self.postMessage({ type: "done", eventLog: state.eventLog } satisfies ExecutorResult);
+  // Defer by one macrotask so any pending microtasks (promise continuations)
+  // have a chance to emit their VP events before we tell the host we're done.
+  setTimeout(() => {
+    self.postMessage({ type: "done", eventLog: state.eventLog } satisfies ExecutorResult);
+  }, 0);
 }
 
 function emitError(err: unknown): void {
@@ -372,6 +376,34 @@ function transformSnippet(source: string): TransformResult {
       },
     });
 
+    // ── PASS 5: console.* → __vp_console_log ─────────────────────────────
+    // Intercept all console method calls so they emit VP events.
+    const __consoleMethods = new Set(["log", "warn", "error", "info", "debug"]);
+    traverse(ast, {
+      CallExpression(path) {
+        const callee = path.node.callee;
+        if (
+          t.isMemberExpression(callee) &&
+          t.isIdentifier(callee.object, { name: "console" }) &&
+          t.isIdentifier(callee.property) &&
+          __consoleMethods.has(callee.property.name)
+        ) {
+          // Guard: skip if already wrapped
+          if (t.isSequenceExpression(path.parent) &&
+              t.isStringLiteral(path.parent.expressions[0]) &&
+              path.parent.expressions[0].value === "__vp_console_marker") return;
+          // Replace: console.log(X, Y) → __vp_console_log(X, Y)
+          path.replaceWith(
+            t.callExpression(t.identifier("__vp_console_log"), [
+              t.stringLiteral(callee.property.name),
+              ...path.node.arguments,
+            ])
+          );
+          path.skip();
+        }
+      },
+    });
+
     const generated = generator(ast, {
       comments: true,
       compact: false,
@@ -591,13 +623,13 @@ function __vp_try_finally() {
 }
 
 // __vp_console_log(...args)
-function __vp_console_log() {
-  const args = Array.from(arguments);
+function __vp_console_log(method) {
+  const args = Array.from(arguments).slice(1);
   const event = {
     type: 'console.output',
     seq: __vp_seq(),
     timestamp: __now(),
-    data: { method: 'log', args: args.map(__serialise) }
+    data: { method: method, args: args.map(__serialise) }
   };
   __vp.state.eventLog.push(event);
   __vp.postMessage({ type: 'event', event });

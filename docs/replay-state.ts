@@ -409,7 +409,9 @@ export function createInitialReplayState(
 export function deriveUIStepInfo(state: ReplayState): UIStepInfo {
   const { currentStepIndex, eventLog } = state;
   const totalSteps = eventLog.length;
-  const currentStep = currentStepIndex + 1; // 1-indexed for display
+  // currentStep matches currentStepIndex directly — execution.start is index 0.
+  // "Step 1" means "showing event at index 0" (execution.start).
+  const currentStep = currentStepIndex;
   const progressPercent =
     totalSteps === 0 ? 0 : Math.round((currentStepIndex / totalSteps) * 100);
 
@@ -426,7 +428,8 @@ export function deriveUIStepInfo(state: ReplayState): UIStepInfo {
     currentEvent:
       currentStepIndex > 0 ? (eventLog[currentStepIndex - 1] ?? null) : null,
     isAtStart: currentStepIndex === 0,
-    isAtEnd: currentStepIndex === totalSteps,
+    // Use >= so isAtEnd is true even while the final event is being rendered
+    isAtEnd: currentStepIndex >= totalSteps,
   };
 }
 

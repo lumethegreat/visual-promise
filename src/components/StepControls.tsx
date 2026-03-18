@@ -41,7 +41,9 @@ export function StepControls({
         ▶▶
       </button>
       <div className="step-indicator">
-        Step {uiStepInfo.currentStep} / {uiStepInfo.totalSteps || "—"}
+        {uiStepInfo.isAtStart
+          ? "Ready —"
+          : `Step ${uiStepInfo.currentStep} / ${uiStepInfo.totalSteps}`}
       </div>
       <div className="progress-bar">
         <div
