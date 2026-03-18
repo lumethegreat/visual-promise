@@ -24,6 +24,8 @@ export default function App() {
     eventLog,
     replayState,
     uiStepInfo,
+    executionError,
+    showErrorBanner,
     execute,
     stepForward,
     stepBack,
@@ -51,6 +53,13 @@ export default function App() {
   };
 
   const validationLevel = validationResult?.level ?? "ok";
+  const executionFailed = replayState.executionFailed;
+  const errorMessage =
+    showErrorBanner && executionError
+      ? executionError.message
+      : executionFailed && uiStepInfo.currentEvent?.type === "error.throw"
+        ? (uiStepInfo.currentEvent as { data?: { message?: string } }).data?.message ?? "Execution failed"
+        : null;
 
   return (
     <div className="app">
@@ -88,6 +97,13 @@ export default function App() {
           level={validationLevel}
           message={validationResult?.messages.map((m) => m.message).join("; ")}
         />
+      )}
+
+      {/* Execution Error Banner */}
+      {errorMessage && (
+        <div className="banner banner-error">
+          <span>⚠ Error: {errorMessage}</span>
+        </div>
       )}
 
       {/* Main layout */}

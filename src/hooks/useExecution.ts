@@ -43,6 +43,8 @@ export interface UseExecutionReturn {
   replayState: ReplayState;
   uiStepInfo: ReturnType<typeof deriveUIStepInfo>;
   executionError: SerializedError | null;
+  /** True after a worker "error" message (persists through done). */
+  showErrorBanner: boolean;
 
   // Actions
   execute: (code: string) => void;
@@ -66,6 +68,8 @@ export function useExecution(): UseExecutionReturn {
     useState<ValidationResult | null>(null);
   const [executionError, setExecutionError] =
     useState<SerializedError | null>(null);
+  const [showErrorBanner, setShowErrorBanner] =
+    useState(false);
 
   // Replay state is managed entirely by the reducer.
   // eventLog lives inside replayState.eventLog — no separate state needed.
@@ -143,6 +147,7 @@ export function useExecution(): UseExecutionReturn {
       if (result.type === "error") {
         setStatus("error");
         setExecutionError(result.error);
+        setShowErrorBanner(true);
         return;
       }
 
@@ -170,6 +175,7 @@ export function useExecution(): UseExecutionReturn {
     // Reset replay state for a fresh run
     dispatch({ type: "__RESET__" } as unknown as VPPEvent);
     setExecutionError(null);
+    setShowErrorBanner(false);
     setStatus("validating");
 
     const validation = validateSnippet(code);
@@ -195,7 +201,7 @@ export function useExecution(): UseExecutionReturn {
         const result = e.data;
         if (result.type === "event") { dispatch(result.event as VPPEvent); return; }
         if (result.type === "done") { setStatus("done"); return; }
-        if (result.type === "error") { setStatus("error"); setExecutionError(result.error); return; }
+        if (result.type === "error") { setStatus("error"); setExecutionError(result.error); setShowErrorBanner(true); return; }
       });
       workerRef.current = w;
     }
@@ -214,6 +220,7 @@ export function useExecution(): UseExecutionReturn {
     setStatus("idle");
     setValidationResult(null);
     setExecutionError(null);
+    setShowErrorBanner(false);
     // Reset reducer state by dispatching a no-op that re-initialises
     // (the reducer will rebuild from the fresh createInitialReplayState)
     dispatch({ type: "__RESET__" } as unknown as VPPEvent);
@@ -226,6 +233,7 @@ export function useExecution(): UseExecutionReturn {
     replayState,
     uiStepInfo,
     executionError,
+    showErrorBanner,
     execute,
     stepForward,
     stepBack,

@@ -717,6 +717,41 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
   } catch (err: unknown) {
     const msg = errMessage(err);
     const s = err instanceof Error ? (err.stack ?? "") : "";
+    const errVal = err instanceof Error ? err : new Error(msg);
+
+    // Emit a synthetic frame.enter so the CallStackPanel shows the error context
+    emit({
+      type: "frame.enter",
+      seq: ++state.seq,
+      timestamp: now(),
+      data: {
+        frameId: "top-level",
+        name: "<error>",
+        kind: "function",
+        exitSeq: 0,
+        parentSeq: null,
+        startLine: 0,
+        startColumn: 0,
+        endLine: 0,
+        endColumn: 0,
+      },
+    } as VPPEvent);
+
+    // Emit error.throw so the reducer marks executionFailed = true
+    emit({
+      type: "error.throw",
+      seq: ++state.seq,
+      timestamp: now(),
+      data: { frameId: "top-level", error: serialiseValue(errVal), message: msg, stack: s },
+    } as VPPEvent);
+
+    // Emit console.error so the error appears in the Console panel
+    emit({
+      type: "console.error",
+      seq: ++state.seq,
+      timestamp: now(),
+      data: { method: "error" as const, args: [msg] },
+    } as VPPEvent);
 
     // Emit execution.end with error
     emit({
