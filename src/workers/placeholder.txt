@@ -1,0 +1,7 @@
+This directory will contain the Web Worker that executes user code and emits
+execution events for visualization.
+
+The worker will:
+- Receive user code snippets to execute
+- Emit structured events as the code runs (sync steps, async waits, etc.)
+- Send those events back to the main thread for rendering

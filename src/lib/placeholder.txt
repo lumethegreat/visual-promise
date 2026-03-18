@@ -1,0 +1,5 @@
+This directory will contain shared utilities and libraries:
+
+- babel-utils: Helpers for parsing and traversing user code via Babel
+- event-emitter: Typed event bus for communication between worker and UI
+- constants: Shared constants (colors, timing, etc.)

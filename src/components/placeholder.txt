@@ -1,0 +1,8 @@
+This directory will contain React components for the Visual Promise UI.
+
+Planned components:
+- CodeEditor: CodeMirror-based code input
+- CallStackView: Visualization of the call stack
+- TaskQueueView: Microtask/macrotask queue visualization
+- PromiseGraph: AST-derived promise chain graph
+- TimelineView: Sequential execution timeline
