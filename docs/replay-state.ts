@@ -413,16 +413,16 @@ export function deriveUIStepInfo(state: ReplayState): UIStepInfo {
   // "Step 1" means "showing event at index 0" (execution.start).
   const currentStep = currentStepIndex;
   const progressPercent =
-    totalSteps === 0 ? 0 : Math.round((currentStepIndex / totalSteps) * 100);
+    totalSteps === 0
+      ? 0
+      : Math.round((currentStepIndex / totalSteps) * 100);
 
   return {
     canStepForward: currentStepIndex < totalSteps,
-    // In MVP: step-back is always disabled (not yet implemented)
-    // Post-M1: this will be `currentStepIndex > 0`
-    canStepBack: false,
+    canStepBack: currentStepIndex > 0,
     currentStep,
     totalSteps,
-    progressPercent,
+    progressPercent: currentStepIndex >= totalSteps ? 100 : progressPercent,
     nextEvent:
       currentStepIndex < totalSteps ? (eventLog[currentStepIndex] ?? null) : null,
     currentEvent:

@@ -5,6 +5,7 @@ interface StepControlsProps {
   isPlaying: boolean;
   playbackSpeed: number;
   onStepForward: () => void;
+  onStepBack: () => void;
   onStepToEnd: () => void;
   onPlay: () => void;
   onPause: () => void;
@@ -16,6 +17,7 @@ export function StepControls({
   isPlaying,
   playbackSpeed,
   onStepForward,
+  onStepBack,
   onStepToEnd,
   onPlay,
   onPause,
@@ -23,6 +25,13 @@ export function StepControls({
 }: StepControlsProps) {
   return (
     <div className="step-controls">
+      <button
+        onClick={onStepBack}
+        disabled={!uiStepInfo.canStepBack}
+        title="Step back"
+      >
+        ◀
+      </button>
       <button
         onClick={onStepForward}
         disabled={!uiStepInfo.canStepForward}

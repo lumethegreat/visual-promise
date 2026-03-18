@@ -47,6 +47,7 @@ export interface UseExecutionReturn {
   // Actions
   execute: (code: string) => void;
   stepForward: () => void;
+  stepBack: () => void;
   stepToEnd: () => void;
   reset: () => void;
 
@@ -88,6 +89,10 @@ export function useExecution(): UseExecutionReturn {
     }
   }, [replayState]);
 
+  const handleStepBack = useCallback(() => {
+    dispatch({ type: "step.back" } as unknown as VPPEvent);
+  }, []);
+
   const handleStepToEnd = useCallback(() => {
     const { eventLog, currentStepIndex } = replayState;
     const remaining = eventLog.slice(currentStepIndex);
@@ -101,10 +106,13 @@ export function useExecution(): UseExecutionReturn {
     pause,
     setSpeed: setPlaybackSpeed,
     stepForward,
+    stepBack,
     stepToEnd,
   } = usePlaybackControls({
     canStepForward: uiStepInfo.canStepForward,
+    canStepBack: uiStepInfo.canStepBack,
     onStepForward: handleStepForward,
+    onStepBack: handleStepBack,
     onStepToEnd: handleStepToEnd,
   });
 
@@ -220,6 +228,7 @@ export function useExecution(): UseExecutionReturn {
     executionError,
     execute,
     stepForward,
+    stepBack,
     stepToEnd,
     reset,
     isPlaying,

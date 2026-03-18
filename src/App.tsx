@@ -26,6 +26,7 @@ export default function App() {
     uiStepInfo,
     execute,
     stepForward,
+    stepBack,
     stepToEnd,
     reset,
     isPlaying,
@@ -61,6 +62,7 @@ export default function App() {
           isPlaying={isPlaying}
           playbackSpeed={playbackSpeed}
           onStepForward={stepForward}
+          onStepBack={stepBack}
           onStepToEnd={stepToEnd}
           onPlay={play}
           onPause={pause}

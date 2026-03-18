@@ -26,21 +26,28 @@ export interface PlaybackControls {
   togglePlay: () => void;
   setSpeed: (speed: number) => void;
   stepForward: () => void;
+  stepBack: () => void;
   stepToEnd: () => void;
 }
 
 interface UsePlaybackControlsOptions {
   /** Whether there is a next event to step to. */
   canStepForward: boolean;
+  /** Whether there is a previous event to step back to. */
+  canStepBack: boolean;
   /** Called when stepForward should be triggered. */
   onStepForward: () => void;
+  /** Called when stepping back should be triggered. */
+  onStepBack: () => void;
   /** Called when stepping to end should be triggered. */
   onStepToEnd: () => void;
 }
 
 export function usePlaybackControls({
   canStepForward,
+  canStepBack: _canStepBack,
   onStepForward,
+  onStepBack,
   onStepToEnd,
 }: UsePlaybackControlsOptions): PlaybackControls {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -56,7 +63,10 @@ export function usePlaybackControls({
     onStepForwardRef.current = onStepForward;
     onStepToEndRef.current = onStepToEnd;
     canStepForwardRef.current = canStepForward;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onStepForward, onStepToEnd, canStepForward]);
+
+  const isPlayingRef = useRef(false);
 
   const clearPlaybackInterval = useCallback(() => {
     if (intervalRef.current !== null) {
@@ -67,11 +77,13 @@ export function usePlaybackControls({
 
   const play = useCallback(() => {
     if (!canStepForwardRef.current) return;
+    isPlayingRef.current = true;
     setIsPlaying(true);
     const intervalMs = SPEED_INTERVALS[playbackSpeed] ?? 500;
     intervalRef.current = setInterval(() => {
       if (!canStepForwardRef.current) {
         clearPlaybackInterval();
+        isPlayingRef.current = false;
         setIsPlaying(false);
         return;
       }
@@ -81,16 +93,17 @@ export function usePlaybackControls({
 
   const pause = useCallback(() => {
     clearPlaybackInterval();
+    isPlayingRef.current = false;
     setIsPlaying(false);
   }, [clearPlaybackInterval]);
 
   const togglePlay = useCallback(() => {
-    if (isPlaying) {
+    if (isPlayingRef.current) {
       pause();
     } else {
       play();
     }
-  }, [isPlaying, play, pause]);
+  }, [play, pause]);
 
   const setSpeed = useCallback(
     (speed: number) => {
@@ -124,6 +137,11 @@ export function usePlaybackControls({
     onStepForward();
   }, [onStepForward]);
 
+  const stepBack = useCallback(() => {
+    pause();
+    onStepBack();
+  }, [pause, onStepBack]);
+
   const stepToEnd = useCallback(() => {
     pause();
     onStepToEnd();
@@ -142,6 +160,7 @@ export function usePlaybackControls({
     togglePlay,
     setSpeed,
     stepForward,
+    stepBack,
     stepToEnd,
   };
 }

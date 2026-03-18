@@ -69,6 +69,19 @@ export function replayReducer(
   const newPromises = new Map(state.promises);
   const newReactions = new Map(state.reactions);
 
+  // Handle replay control actions (not real VPP events from the worker)
+  const actionType: string = (action as { type: string }).type;
+  if (actionType === "step.back") {
+    return {
+      ...state,
+      currentStepIndex: Math.max(0, state.currentStepIndex - 1),
+    };
+  }
+
+  if (actionType === "__RESET__") {
+    return createInitialReplayState([]);
+  }
+
   switch (action.type) {
     // ── Execution lifecycle ─────────────────────────────────────────────────
 
@@ -370,13 +383,5 @@ export function replayReducer(
       // This allows the system to evolve without breaking older reducer versions.
       return state;
     }
-
-    // ── Control events ──────────────────────────────────────────────────
-
-    // __RESET__ is not a real VP event — used by useExecution to reset state.
-    // Placed here (before default) to avoid the VPPEvent type mismatch.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    case "__RESET__" as any:
-      return createInitialReplayState(state.eventLog);
   }
 }
