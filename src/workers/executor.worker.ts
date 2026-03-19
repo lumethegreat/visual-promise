@@ -1078,7 +1078,12 @@ __vp.state.eventLog.push(__startEvent);
 __vp.postMessage({ type: 'event', event: __startEvent });
 
 // ── User code ────────────────────────────────────────────────────────────────
+// Wrap in async IIFE so any top-level async function rejections propagate to
+// the executor's .catch() (execFn returns undefined for f(); when f is async,
+// because the executor runs to completion before the async rejection microtask).
+return (async () => {
 ${transformedCode}
+})();
 `;
 }
 
@@ -1127,11 +1132,12 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
     // This ensures console.output events from .then() callbacks reach the main
     // thread before we send "done".
     if (returnValue && typeof (returnValue as Promise<unknown>).then === "function") {
+      // .catch() MUST come first so error events (frame.enter, error.throw,
+      // console.error) are emitted before execution.end on rejection.
+      // We chain via Promise.resolve() so execution.end fires in its own microtask
+      // AFTER any .catch() handlers (JS microtasks process .catch before .then
+      // when attached in this order on a rejected promise).
       (returnValue as Promise<unknown>)
-        .then(() => {
-          emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } });
-          emitDone();
-        })
         .catch((err: unknown) => {
           const msg = errMessage(err);
           const s = err instanceof Error ? (err.stack ?? "") : "";
@@ -1182,6 +1188,12 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
           emitError(err);
           emitDone();
         });
+      // Deferred: emit execution.end after .catch() has had a chance to run.
+      // Promise.resolve() creates a new microtask so this runs after .catch().
+      Promise.resolve(returnValue).then(() => {
+        emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } });
+        emitDone();
+      });
     } else {
       // Synchronous code: emitDone immediately
       emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } });
