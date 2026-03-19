@@ -77,13 +77,13 @@ export function usePlaybackControls({
 
   const play = useCallback(
     (canStepForwardCurrent: boolean) => {
-      if (!canStepForwardCurrent) return;
+      if (!canStepForwardRef.current) return;
       isPlayingRef.current = true;
       setIsPlaying(true);
       const intervalMs = SPEED_INTERVALS[playbackSpeed] ?? 500;
       intervalRef.current = setInterval(() => {
-        // Read directly from closure arg so it's always current
-        if (!canStepForwardCurrent) {
+        // Read from REF so it's always current — not from closure param
+        if (!canStepForwardRef.current) {
           clearPlaybackInterval();
           isPlayingRef.current = false;
           setIsPlaying(false);
@@ -117,8 +117,8 @@ export function usePlaybackControls({
         clearPlaybackInterval();
         const intervalMs = SPEED_INTERVALS[speed] ?? 500;
         intervalRef.current = setInterval(() => {
-          // Read from closure so it's always current
-          if (!canStepForward) {
+          // Read from REF so it's always current
+          if (!canStepForwardRef.current) {
             clearPlaybackInterval();
             setIsPlaying(false);
             return;
