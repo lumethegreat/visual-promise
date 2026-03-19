@@ -83,6 +83,7 @@ function emitDone(): void {
   // Defer by one macrotask so any pending microtasks (promise continuations)
   // have a chance to emit their VP events before we tell the host we're done.
   setTimeout(() => {
+    if (state.aborted) return;
     // Emit error.unhandled for every rejected promise that never got a handler.
     // The unhandledRejections Set is populated by __vp_promise_reject and
     // __vp_promise_executor whenever a promise is settled as rejected without a handler.

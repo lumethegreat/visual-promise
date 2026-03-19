@@ -215,6 +215,9 @@ export function useExecution(): UseExecutionReturn {
    * Clears all execution state and terminates the current worker.
    */
   const reset = useCallback(() => {
+    // Signal the worker to abort BEFORE terminating it.
+    // This ensures emitDone() checks state.aborted and returns early.
+    workerRef.current?.postMessage({ type: "terminate" });
     workerRef.current?.terminate();
     workerRef.current = null;  // Effect won't recreate since it has [] deps — execute() handles it
     setStatus("idle");
