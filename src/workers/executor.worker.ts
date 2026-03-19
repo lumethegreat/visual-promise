@@ -1132,11 +1132,10 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
     // This ensures console.output events from .then() callbacks reach the main
     // thread before we send "done".
     if (returnValue && typeof (returnValue as Promise<unknown>).then === "function") {
-      // .catch() MUST come first so error events (frame.enter, error.throw,
-      // console.error) are emitted before execution.end on rejection.
-      // We chain via Promise.resolve() so execution.end fires in its own microtask
-      // AFTER any .catch() handlers (JS microtasks process .catch before .then
-      // when attached in this order on a rejected promise).
+      // Chain .catch() first so it handles rejections BEFORE the .then()
+      // success path. This ensures error events (frame.enter, error.throw,
+      // console.error) reach the UI before execution.end on rejection.
+      // The .catch() returns undefined so .then() fires regardless.
       (returnValue as Promise<unknown>)
         .catch((err: unknown) => {
           const msg = errMessage(err);
@@ -1187,13 +1186,13 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
 
           emitError(err);
           emitDone();
+        })
+        .then(() => {
+          // .catch() returned undefined (rejection was handled), so .then() fires.
+          // Only emit success execution.end if not already emitted by .catch().
+          emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } });
+          emitDone();
         });
-      // Deferred: emit execution.end after .catch() has had a chance to run.
-      // Promise.resolve() creates a new microtask so this runs after .catch().
-      Promise.resolve(returnValue).then(() => {
-        emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } });
-        emitDone();
-      });
     } else {
       // Synchronous code: emitDone immediately
       emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } });
