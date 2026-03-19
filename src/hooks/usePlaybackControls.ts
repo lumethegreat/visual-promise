@@ -75,21 +75,25 @@ export function usePlaybackControls({
     }
   }, []);
 
-  const play = useCallback(() => {
-    if (!canStepForwardRef.current) return;
-    isPlayingRef.current = true;
-    setIsPlaying(true);
-    const intervalMs = SPEED_INTERVALS[playbackSpeed] ?? 500;
-    intervalRef.current = setInterval(() => {
-      if (!canStepForwardRef.current) {
-        clearPlaybackInterval();
-        isPlayingRef.current = false;
-        setIsPlaying(false);
-        return;
-      }
-      onStepForwardRef.current();
-    }, intervalMs);
-  }, [playbackSpeed, clearPlaybackInterval]);
+  const play = useCallback(
+    (canStepForwardCurrent: boolean) => {
+      if (!canStepForwardCurrent) return;
+      isPlayingRef.current = true;
+      setIsPlaying(true);
+      const intervalMs = SPEED_INTERVALS[playbackSpeed] ?? 500;
+      intervalRef.current = setInterval(() => {
+        // Read directly from closure arg so it's always current
+        if (!canStepForwardCurrent) {
+          clearPlaybackInterval();
+          isPlayingRef.current = false;
+          setIsPlaying(false);
+          return;
+        }
+        onStepForwardRef.current();
+      }, intervalMs);
+    },
+    [playbackSpeed, clearPlaybackInterval],
+  );
 
   const pause = useCallback(() => {
     clearPlaybackInterval();
@@ -101,9 +105,9 @@ export function usePlaybackControls({
     if (isPlayingRef.current) {
       pause();
     } else {
-      play();
+      play(canStepForward);
     }
-  }, [play, pause]);
+  }, [play, pause, canStepForward]);
 
   const setSpeed = useCallback(
     (speed: number) => {
@@ -113,7 +117,8 @@ export function usePlaybackControls({
         clearPlaybackInterval();
         const intervalMs = SPEED_INTERVALS[speed] ?? 500;
         intervalRef.current = setInterval(() => {
-          if (!canStepForwardRef.current) {
+          // Read from closure so it's always current
+          if (!canStepForward) {
             clearPlaybackInterval();
             setIsPlaying(false);
             return;
@@ -122,7 +127,7 @@ export function usePlaybackControls({
         }, intervalMs);
       }
     },
-    [isPlaying, clearPlaybackInterval],
+    [isPlaying, clearPlaybackInterval, canStepForward],
   );
 
   // Stop playback when there are no more steps
