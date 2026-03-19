@@ -536,6 +536,12 @@ function transformSnippet(source: string): TransformResult {
     });
 
     // ── PASS 6: Promise.reject(...) → __vp_promise_reject ──────────────────
+    // Transforms Promise.reject(...) into a sequence expression so the side-effecting
+    // __vp_promise_reject() call is emitted while the actual rejected promise is still
+    // returned (so the caller's code can chain onto it).
+    // Multi-statement code (e.g. `Promise.reject("e"); console.log("after")`) is handled
+    // correctly: each statement is transformed independently and the sequence expression
+    // is wrapped in its own expression statement by the Babel generator.
     traverse(ast, {
       CallExpression(path) {
         const callee = path.node.callee;
