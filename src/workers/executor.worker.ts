@@ -59,6 +59,7 @@ const state: RuntimeState = {
   seq: 0,
   eventLog: [],
   aborted: false,
+  executing: false,
   frameStack: [],
   promiseIdCounter: 0,
   reactionIdCounter: 0,
@@ -1263,11 +1264,15 @@ self.onmessage = (event: MessageEvent<ExecutorMessage>) => {
 
   switch (msg.type) {
     case "execute": {
+      if (state.executing) return;
       const code = msg.code;
       const entryId = `eval#${++entryIdCounter}`;
-      executeSnippet(code, code, entryId).catch((err: unknown) => {
-        emitError(err);
-      });
+      state.executing = true;
+      executeSnippet(code, code, entryId)
+        .finally(() => { state.executing = false; })
+        .catch((err: unknown) => {
+          emitError(err);
+        });
       break;
     }
 

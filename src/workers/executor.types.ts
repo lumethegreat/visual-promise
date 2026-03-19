@@ -108,6 +108,8 @@ export interface RuntimeState {
   seq: number;
   eventLog: VPPEvent[];
   aborted: boolean;
+  /** Guards against re-entrant execute calls during playback. */
+  executing: boolean;
   // Frame tracking
   frameStack: string[];
   promiseIdCounter: number;
