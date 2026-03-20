@@ -110,6 +110,9 @@ export interface RuntimeState {
   aborted: boolean;
   /** Guards against re-entrant execute calls during playback. */
   executing: boolean;
+  /** Monotonic id for the currently active execution. Late async callbacks from
+   * older executions must not append events into the latest run. */
+  currentExecutionId: number;
   // Frame tracking
   frameStack: string[];
   promiseIdCounter: number;

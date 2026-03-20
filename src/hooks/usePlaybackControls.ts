@@ -75,25 +75,21 @@ export function usePlaybackControls({
     }
   }, []);
 
-  const play = useCallback(
-    (canStepForwardCurrent: boolean) => {
-      if (!canStepForwardRef.current) return;
-      isPlayingRef.current = true;
-      setIsPlaying(true);
-      const intervalMs = SPEED_INTERVALS[playbackSpeed] ?? 500;
-      intervalRef.current = setInterval(() => {
-        // Read from REF so it's always current — not from closure param
-        if (!canStepForwardRef.current) {
-          clearPlaybackInterval();
-          isPlayingRef.current = false;
-          setIsPlaying(false);
-          return;
-        }
-        onStepForwardRef.current();
-      }, intervalMs);
-    },
-    [playbackSpeed, clearPlaybackInterval],
-  );
+  const play = useCallback(() => {
+    if (!canStepForwardRef.current) return;
+    isPlayingRef.current = true;
+    setIsPlaying(true);
+    const intervalMs = SPEED_INTERVALS[playbackSpeed] ?? 500;
+    intervalRef.current = setInterval(() => {
+      if (!canStepForwardRef.current) {
+        clearPlaybackInterval();
+        isPlayingRef.current = false;
+        setIsPlaying(false);
+        return;
+      }
+      onStepForwardRef.current();
+    }, intervalMs);
+  }, [playbackSpeed, clearPlaybackInterval]);
 
   const pause = useCallback(() => {
     clearPlaybackInterval();
@@ -105,9 +101,9 @@ export function usePlaybackControls({
     if (isPlayingRef.current) {
       pause();
     } else {
-      play(canStepForward);
+      play();
     }
-  }, [play, pause, canStepForward]);
+  }, [play, pause]);
 
   const setSpeed = useCallback(
     (speed: number) => {

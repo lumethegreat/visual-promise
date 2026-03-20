@@ -60,6 +60,7 @@ const state: RuntimeState = {
   eventLog: [],
   aborted: false,
   executing: false,
+  currentExecutionId: 0,
   frameStack: [],
   promiseIdCounter: 0,
   reactionIdCounter: 0,
@@ -73,17 +74,21 @@ let entryIdCounter = 0;
 
 // ─── PostMessage bridge ──────────────────────────────────────────────────────
 
-function emit(event: VPPEvent): void {
-  if (state.aborted) return;
+function isExecutionCurrent(executionId: number): boolean {
+  return !state.aborted && state.currentExecutionId === executionId;
+}
+
+function emit(event: VPPEvent, executionId: number = state.currentExecutionId): void {
+  if (!isExecutionCurrent(executionId)) return;
   state.eventLog.push(event);
   self.postMessage({ type: "event", event } satisfies ExecutorResult);
 }
 
-function emitDone(): void {
+function emitDone(executionId: number = state.currentExecutionId): void {
   // Defer by one macrotask so any pending microtasks (promise continuations)
   // have a chance to emit their VP events before we tell the host we're done.
   setTimeout(() => {
-    if (state.aborted) return;
+    if (!isExecutionCurrent(executionId)) return;
     // Emit error.unhandled for every rejected promise that never got a handler.
     // The unhandledRejections Set is populated by __vp_promise_reject and
     // __vp_promise_executor whenever a promise is settled as rejected without a handler.
@@ -106,6 +111,7 @@ function emitDone(): void {
           args: [`Unhandled Promise Rejection: ${meta?.message ?? String(reasonSer)}`]
         }
       };
+      if (!isExecutionCurrent(executionId)) return;
       state.eventLog.push(consoleErrEvent);
       self.postMessage({ type: "event", event: consoleErrEvent });
 
@@ -121,10 +127,12 @@ function emitDone(): void {
           stack: meta?.stack ?? "",
         },
       };
+      if (!isExecutionCurrent(executionId)) return;
       state.eventLog.push(unhandledEvent);
       self.postMessage({ type: "event", event: unhandledEvent });
     }
 
+    if (!isExecutionCurrent(executionId)) return;
     self.postMessage({ type: "done", eventLog: state.eventLog } satisfies ExecutorResult);
   }, 0);
 }
@@ -627,6 +635,7 @@ function buildExecutionSource(transformedCode: string): string {
 'use strict';
 // ── VP runtime helpers (sandboxed inside this execution context) ──────────────
 const __vp = __bridge;
+const __vp_emit = __vp.emitEvent;
 
 function __serialise(val) {
   if (val === null) return null;
@@ -651,8 +660,7 @@ function __vp_promise_create(promiseId, label, constructor, asyncFrameId) {
     timestamp: __now(),
     data: { promiseId, constructor, ...(asyncFrameId ? { asyncFrameId } : {}) }
   };
-  __vp.state.eventLog.push(event);
-  __vp.postMessage({ type: 'event', event });
+  __vp_emit(event);
 }
 
 // __vp_promise_settle(promiseId, status, value)
@@ -668,8 +676,7 @@ function __vp_promise_settle(promiseId, status, value) {
       ...(status === 'rejected' ? { reason: __serialise(value) } : {})
     }
   };
-  __vp.state.eventLog.push(event);
-  __vp.postMessage({ type: 'event', event });
+  __vp_emit(event);
 }
 
 // __vp_reaction_register(promiseId, method, reactionId)
@@ -680,8 +687,7 @@ function __vp_reaction_register(promiseId, method, reactionId) {
     timestamp: __now(),
     data: { reactionId, promiseId, handlerType: method, index: 0 }
   };
-  __vp.state.eventLog.push(event);
-  __vp.postMessage({ type: 'event', event });
+  __vp_emit(event);
 }
 
 // __vp_reaction_enqueue(reactionId, promiseId, queuePosition, queueDepth)
@@ -692,8 +698,7 @@ function __vp_reaction_enqueue(reactionId, promiseId, queuePosition, queueDepth)
     timestamp: __now(),
     data: { reactionId, promiseId, queuePosition, queueDepth }
   };
-  __vp.state.eventLog.push(event);
-  __vp.postMessage({ type: 'event', event });
+  __vp_emit(event);
 }
 
 // __vp_then(promise, registrationResult, onFulfilled, onRejected)
@@ -715,8 +720,7 @@ function __vp_then(promise, _registrationResult, onFulfilled, onRejected) {
       timestamp: __now(),
       data: { reactionId: __vp_reactionId, settlementType: 'fulfilled', settlementValue: __serialise(__vp_val) }
     };
-    __vp.state.eventLog.push(runEvent);
-    __vp.postMessage({ type: 'event', event: runEvent });
+    __vp_emit(runEvent);
 
     if (typeof onFulfilled === 'function') {
       try {
@@ -731,8 +735,7 @@ function __vp_then(promise, _registrationResult, onFulfilled, onRejected) {
           timestamp: __now(),
           data: { frameId: __vp_reactionId, error: __serialise(__vp_e), message: msg, stack: s }
         };
-        __vp.state.eventLog.push(errEvent);
-        __vp.postMessage({ type: 'event', event: errEvent });
+        __vp_emit(errEvent);
         throw __vp_e;
       }
     }
@@ -746,8 +749,7 @@ function __vp_then(promise, _registrationResult, onFulfilled, onRejected) {
       timestamp: __now(),
       data: { reactionId: __vp_reactionId, settlementType: 'rejected', settlementValue: __serialise(__vp_err) }
     };
-    __vp.state.eventLog.push(runEvent);
-    __vp.postMessage({ type: 'event', event: runEvent });
+    __vp_emit(runEvent);
 
     if (typeof onRejected === 'function') {
       try {
@@ -761,8 +763,7 @@ function __vp_then(promise, _registrationResult, onFulfilled, onRejected) {
           timestamp: __now(),
           data: { frameId: __vp_reactionId, error: __serialise(__vp_e2), message: msg, stack: s }
         };
-        __vp.state.eventLog.push(errEvent);
-        __vp.postMessage({ type: 'event', event: errEvent });
+        __vp_emit(errEvent);
         throw __vp_e2;
       }
     }
@@ -784,8 +785,7 @@ function __vp_catch(promise, _registrationResult, onRejected) {
       timestamp: __now(),
       data: { reactionId: __vp_reactionId, settlementType: 'rejected', settlementValue: __serialise(__vp_err) }
     };
-    __vp.state.eventLog.push(runEvent);
-    __vp.postMessage({ type: 'event', event: runEvent });
+    __vp_emit(runEvent);
 
     if (typeof onRejected === 'function') {
       try {
@@ -799,8 +799,7 @@ function __vp_catch(promise, _registrationResult, onRejected) {
           timestamp: __now(),
           data: { frameId: __vp_reactionId, error: __serialise(__vp_e2), message: msg, stack: s }
         };
-        __vp.state.eventLog.push(errEvent);
-        __vp.postMessage({ type: 'event', event: errEvent });
+        __vp_emit(errEvent);
         throw __vp_e2;
       }
     }
@@ -824,8 +823,7 @@ function __vp_finally(promise, _registrationResult, onFinally) {
       timestamp: __now(),
       data: { reactionId: __vp_reactionId, settlementType: 'fulfilled', settlementValue: __serialise(__vp_val) }
     };
-    __vp.state.eventLog.push(runEvent);
-    __vp.postMessage({ type: 'event', event: runEvent });
+    __vp_emit(runEvent);
 
     if (typeof onFinally === 'function') {
       onFinally();
@@ -845,8 +843,7 @@ function __vp_reaction_run(reactionId, settlementType, settlementValue) {
     timestamp: __now(),
     data: { reactionId, settlementType, settlementValue: __serialise(settlementValue) }
   };
-  __vp.state.eventLog.push(event);
-  __vp.postMessage({ type: 'event', event });
+  __vp_emit(event);
 }
 
 // __vp_promise_reject(promiseId, reason) — wraps Promise.reject(reason)
@@ -1018,8 +1015,7 @@ function __vp_frame_enter(frameId, name, kind, startLine, startCol, endLine, end
     timestamp: __now(),
     data: { frameId, name, kind, exitSeq: _exitSeq, parentSeq, startLine, startColumn: startCol, endLine, endColumn: endCol }
   };
-  __vp.state.eventLog.push(event);
-  __vp.postMessage({ type: 'event', event });
+  __vp_emit(event);
 }
 
 // __vp_frame_exit(frameId, normal, returnVal?)
@@ -1031,8 +1027,7 @@ function __vp_frame_exit(frameId, normal, returnVal) {
     timestamp: __now(),
     data: { frameId, normal, ...(normal ? { returnValue: __serialise(returnVal) } : {}) }
   };
-  __vp.state.eventLog.push(event);
-  __vp.postMessage({ type: 'event', event });
+  __vp_emit(event);
 }
 
 // __vp_error_catch(frameId)
@@ -1068,8 +1063,7 @@ function __vp_console_log(method) {
     timestamp: __now(),
     data: { method: method, args: args.map(__serialise) }
   };
-  __vp.state.eventLog.push(event);
-  __vp.postMessage({ type: 'event', event });
+  __vp_emit(event);
 }
 
 // ── execution.start ──────────────────────────────────────────────────────────
@@ -1095,7 +1089,7 @@ ${transformedCode}
 `;
 }
 
-async function executeSnippet(code: string, snippet: string, entryId: string): Promise<void> {
+async function executeSnippet(code: string, snippet: string, entryId: string, executionId: number): Promise<void> {
   // Reset state for this execution
   state.seq = 0;
   state.eventLog = [];
@@ -1111,7 +1105,7 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
   const result = transformSnippet(code);
   if (!result.success) {
     emitError(new Error(`Transform error: ${result.error}`));
-    emitDone();
+    emitDone(executionId);
     return;
   }
 
@@ -1123,8 +1117,12 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
     state,
     entryId,
     snippet,
+    executionId,
+    emitEvent: (event: VPPEvent) => {
+      emit(event, executionId);
+    },
     postMessage: (msg: unknown) => {
-      if (state.aborted) return;
+      if (!isExecutionCurrent(executionId)) return;
       self.postMessage(msg);
     },
   };
@@ -1166,7 +1164,7 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
               endLine: 0,
               endColumn: 0,
             },
-          } as VPPEvent);
+          } as VPPEvent, executionId);
 
           // Emit error.throw so the reducer marks executionFailed = true
           emit({
@@ -1174,7 +1172,7 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
             seq: ++state.seq,
             timestamp: now(),
             data: { frameId: "top-level", error: serialiseValue(errVal), message: msg, stack: s },
-          } as VPPEvent);
+          } as VPPEvent, executionId);
 
           // Emit console.error so the error appears in the Console panel
           emit({
@@ -1182,7 +1180,7 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
             seq: ++state.seq,
             timestamp: now(),
             data: { method: "error" as const, args: [msg] },
-          } as VPPEvent);
+          } as VPPEvent, executionId);
 
           // Emit execution.end with error
           emit({
@@ -1190,21 +1188,21 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
             seq: ++state.seq,
             timestamp: now(),
             data: { ok: false, message: msg, stack: s },
-          } as VPPEvent);
+          } as VPPEvent, executionId);
 
           emitError(err);
-          emitDone();
+          emitDone(executionId);
         })
         .then(() => {
           // .catch() returned undefined (rejection was handled), so .then() fires.
           // Only emit success execution.end if not already emitted by .catch().
-          emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } });
-          emitDone();
+          emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } }, executionId);
+          emitDone(executionId);
         });
     } else {
       // Synchronous code: emitDone immediately
-      emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } });
-      emitDone();
+      emit({ type: "execution.end", seq: ++state.seq, timestamp: now(), data: { ok: true } }, executionId);
+      emitDone(executionId);
     }
   } catch (err: unknown) {
     const msg = errMessage(err);
@@ -1227,7 +1225,7 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
         endLine: 0,
         endColumn: 0,
       },
-    } as VPPEvent);
+    } as VPPEvent, executionId);
 
     // Emit error.throw so the reducer marks executionFailed = true
     emit({
@@ -1235,7 +1233,7 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
       seq: ++state.seq,
       timestamp: now(),
       data: { frameId: "top-level", error: serialiseValue(errVal), message: msg, stack: s },
-    } as VPPEvent);
+    } as VPPEvent, executionId);
 
     // Emit console.error so the error appears in the Console panel
     emit({
@@ -1243,7 +1241,7 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
       seq: ++state.seq,
       timestamp: now(),
       data: { method: "error" as const, args: [msg] },
-    } as VPPEvent);
+    } as VPPEvent, executionId);
 
     // Emit execution.end with error
     emit({
@@ -1251,10 +1249,10 @@ async function executeSnippet(code: string, snippet: string, entryId: string): P
       seq: ++state.seq,
       timestamp: now(),
       data: { ok: false, message: msg, stack: s },
-    } as VPPEvent);
+    } as VPPEvent, executionId);
 
     emitError(err);
-    emitDone();
+    emitDone(executionId);
   }
 }
 
@@ -1269,7 +1267,7 @@ self.onmessage = (event: MessageEvent<ExecutorMessage>) => {
       const code = msg.code;
       const entryId = `eval#${++entryIdCounter}`;
       state.executing = true;
-      executeSnippet(code, code, entryId)
+      executeSnippet(code, code, entryId, ++state.currentExecutionId)
         .finally(() => { state.executing = false; })
         .catch((err: unknown) => {
           emitError(err);
@@ -1284,8 +1282,8 @@ self.onmessage = (event: MessageEvent<ExecutorMessage>) => {
         seq: ++state.seq,
         timestamp: now(),
         data: { ok: false, message: "Execution terminated by host", stack: "" },
-      } as VPPEvent);
-      emitDone();
+      } as VPPEvent, state.currentExecutionId);
+      emitDone(state.currentExecutionId);
       break;
     }
 
