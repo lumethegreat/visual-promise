@@ -19,7 +19,7 @@ import {
 } from "react";
 import { validateSnippet } from "../lib/validator";
 import type { ValidationResult } from "../lib/validation-result";
-import { replayReducer, applyReplayEvent } from "../lib/replay-reducer";
+import { replayReducer } from "../lib/replay-reducer";
 import {
   createInitialReplayState,
   deriveUIStepInfo,

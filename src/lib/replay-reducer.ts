@@ -220,11 +220,17 @@ export function applyReplayEvent(
     }
 
     case "frame.exit": {
-      newState.frameStack = state.frameStack.map((f: ExecutionFrame) =>
-        f.frameId === action.data.frameId
-          ? { ...f, status: "exited", exitSeq: action.seq }
-          : f,
+      // Remove the frame from the stack (pop the top frame).
+      // This keeps frameStack accurate as a logical call stack of currently-active frames.
+      const exitIndex = state.frameStack.findIndex(
+        (f: ExecutionFrame) => f.frameId === action.data.frameId,
       );
+      if (exitIndex >= 0) {
+        newState.frameStack = [
+          ...state.frameStack.slice(0, exitIndex),
+          ...state.frameStack.slice(exitIndex + 1),
+        ];
+      }
       newState.lastEvent = action;
       return newState;
     }

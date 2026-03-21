@@ -372,7 +372,7 @@ describe("frame.enter", () => {
 });
 
 describe("frame.exit", () => {
-  it("marks frame as exited with exitSeq and keeps it in the stack", () => {
+  it("removes the frame from the stack on frame.exit", () => {
     const state = initialState();
     const enter = makeEvent({
       ...baseEvent(1),
@@ -386,11 +386,50 @@ describe("frame.exit", () => {
     });
 
     const s1 = replayReducer(state, enter);
-    const s2 = replayReducer(s1, exit);
+    expect(s1.frameStack).toHaveLength(1);
 
-    expect(s2.frameStack[0]!.status).toBe("exited");
-    expect(s2.frameStack[0]!.exitSeq).toBe(3);
-    expect(s2.frameStack).toHaveLength(1); // not removed
+    const s2 = replayReducer(s1, exit);
+    expect(s2.frameStack).toHaveLength(0); // removed from stack
+  });
+
+  it("correctly tracks nested frame exits (LIFO order)", () => {
+    const state = initialState();
+    const enterA = makeEvent({
+      ...baseEvent(1),
+      type: "frame.enter",
+      data: { frameId: "f_a", name: "a", kind: "function", exitSeq: 6, parentSeq: null, startLine: 1, startColumn: 1, endLine: 5, endColumn: 1 },
+    });
+    const enterB = makeEvent({
+      ...baseEvent(2),
+      type: "frame.enter",
+      data: { frameId: "f_b", name: "b", kind: "function", exitSeq: 5, parentSeq: null, startLine: 2, startColumn: 1, endLine: 4, endColumn: 1 },
+    });
+    const enterC = makeEvent({
+      ...baseEvent(3),
+      type: "frame.enter",
+      data: { frameId: "f_c", name: "c", kind: "function", exitSeq: 4, parentSeq: null, startLine: 3, startColumn: 1, endLine: 3, endColumn: 1 },
+    });
+    const exitC = makeEvent({ ...baseEvent(4), type: "frame.exit", data: { frameId: "f_c", normal: true } });
+    const exitB = makeEvent({ ...baseEvent(5), type: "frame.exit", data: { frameId: "f_b", normal: true } });
+    const exitA = makeEvent({ ...baseEvent(6), type: "frame.exit", data: { frameId: "f_a", normal: true } });
+
+    const s1 = replayReducer(state, enterA); // [a]
+    expect(s1.frameStack).toHaveLength(1);
+
+    const s2 = replayReducer(s1, enterB); // [a, b]
+    expect(s2.frameStack).toHaveLength(2);
+
+    const s3 = replayReducer(s2, enterC); // [a, b, c]
+    expect(s3.frameStack).toHaveLength(3);
+
+    const s4 = replayReducer(s3, exitC); // [a, b]
+    expect(s4.frameStack).toHaveLength(2);
+
+    const s5 = replayReducer(s4, exitB); // [a]
+    expect(s5.frameStack).toHaveLength(1);
+
+    const s6 = replayReducer(s5, exitA); // []
+    expect(s6.frameStack).toHaveLength(0);
   });
 });
 
@@ -849,7 +888,7 @@ describe("full integration — typical async function execution", () => {
     expect(state.promises.get("p1")!.state).toBe("fulfilled");
     expect(state.promises.get("p1")!.value).toBe(1);
     expect(state.reactions.get("r1")!.status).toBe("complete");
-    expect(state.frameStack[0]!.status).toBe("exited");
+    expect(state.frameStack).toHaveLength(0); // frame removed after frame.exit
     expect(state.microtaskQueue.entries).toHaveLength(0);
     expect(state.consoleEntries).toHaveLength(1);
     expect(state.executionFailed).toBe(false);
