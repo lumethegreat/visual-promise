@@ -100,7 +100,9 @@ export function useExecution(): UseExecutionReturn {
   const handleStepToEnd = useCallback(() => {
     const { eventLog, currentStepIndex } = replayState;
     const remaining = eventLog.slice(currentStepIndex);
-    remaining.forEach((evt) => dispatch(evt));
+    remaining.forEach((evt) =>
+      dispatch({ type: "__APPLY_REPLAY_EVENT__", event: evt } as unknown as VPPEvent)
+    );
   }, [replayState]);
 
   const {
