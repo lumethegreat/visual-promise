@@ -64,10 +64,10 @@ const { chromium } = require('playwright');
     throw new Error('Step to end button não disponível ou desabilitado');
   }
 
-  // Play/Pause button: second button in step-controls (index 1)
-  // Button at index 0 = ▶ (Step Forward), index 1 = ▶/⏸ (Play/Pause), index 2 = ▶▶ (Step to End)
+  // Play/Pause button: button without title inside step-controls.
+  // The titled buttons are Step back / Step forward / Step to end.
   async function getPlayPauseButton() {
-    return page.locator('.step-controls button').nth(1);
+    return page.locator('.step-controls button:not([title])').first();
   }
 
   async function clickPlayPause() {
@@ -120,8 +120,9 @@ const { chromium } = require('playwright');
   await typeCode(TEST_CODE);
 
   // ══════════════════════════════════════════════════════════════════
-  // TEST 1: Step Forward (>) — não pode ser testado após Run (já está
-  // no fim). Precisamos de usar Play e pausar para testar Step Forward.
+  // TEST 1: Step Forward (>)
+  // Nota: Run já deixa a UI no fim; por isso esta parte da QA continua
+  // frágil e serve apenas como smoke test, não como validação principal.
   // ══════════════════════════════════════════════════════════════════
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('TEST 1: Step Forward (>)');
@@ -226,8 +227,6 @@ const { chromium } = require('playwright');
     await doReset();
     await doRun();
     await page.waitForTimeout(500);
-    // Step to end first
-    await stepToEnd();
     const stepAtEnd = await getStepIndicator();
 
     await stepBackBtn.click();
@@ -242,6 +241,70 @@ const { chromium } = require('playwright');
         'Step indicator volta para trás',
         `Não mudou: ${stepAtEnd} → ${stepAfterBack}`,
         'CRITICAL');
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // TEST 2.5: Step Back → Play must stop at end (regression)
+  // ══════════════════════════════════════════════════════════════════
+  console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('TEST 2.5: Step Back → Play regression');
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+  if (!hasStepBack) {
+    console.log('  ⚠ Step Back não existe — a saltar regression test');
+  } else {
+    await doReset();
+    await doRun();
+    await page.waitForTimeout(1000);
+
+    const stepAfterRunRegression = await getStepIndicator();
+    const eventLogBeforeBack = await page.locator('body').innerText();
+    const eventLogCountBeforeBack = (eventLogBeforeBack.match(/execution\.|promise\.|reaction\.|frame\.|await\.|console\.|error\./g) || []).length;
+    console.log(`  📊 Após Run: Step="${stepAfterRunRegression}", Event markers≈${eventLogCountBeforeBack}`);
+
+    for (let i = 0; i < 3; i++) {
+      await stepBackBtn.click();
+      await page.waitForTimeout(250);
+    }
+
+    const stepAfterBackRegression = await getStepIndicator();
+    console.log(`  📊 Após Step Back (x3): Step="${stepAfterBackRegression}"`);
+
+    await clickPlayPause();
+    await page.waitForTimeout(7000);
+
+    const stepAfterLongPlay = await getStepIndicator();
+    const bodyAfterLongPlay = await page.locator('body').innerText();
+    const eventLogCountAfterLongPlay = (bodyAfterLongPlay.match(/execution\.|promise\.|reaction\.|frame\.|await\.|console\.|error\./g) || []).length;
+    const playingAfterLongPlay = await isPlaying();
+    console.log(`  📊 Após Play (7s): Step="${stepAfterLongPlay}", Event markers≈${eventLogCountAfterLongPlay}, Playing=${playingAfterLongPlay}`);
+
+    await page.waitForTimeout(3000);
+    const stepAfterExtraWait = await getStepIndicator();
+    const bodyAfterExtraWait = await page.locator('body').innerText();
+    const eventLogCountAfterExtraWait = (bodyAfterExtraWait.match(/execution\.|promise\.|reaction\.|frame\.|await\.|console\.|error\./g) || []).length;
+    const playingAfterExtraWait = await isPlaying();
+    console.log(`  📊 Após espera extra (3s): Step="${stepAfterExtraWait}", Event markers≈${eventLogCountAfterExtraWait}, Playing=${playingAfterExtraWait}`);
+
+    const stepStable = stepAfterExtraWait === stepAfterLongPlay;
+    const logStable = eventLogCountAfterExtraWait === eventLogCountAfterLongPlay;
+    const playbackStopped = !playingAfterExtraWait;
+
+    console.log(`  ${stepStable ? '✅' : '❌'} Step estabilizou no fim`);
+    console.log(`  ${logStable ? '✅' : '❌'} Event log deixou de crescer`);
+    console.log(`  ${playbackStopped ? '✅' : '❌'} Playback parou automaticamente`);
+
+    if (!stepStable || !logStable || !playbackStopped) {
+      addBug('Step Back → Play entra em loop após chegar ao fim', 'Step Back → Play regression',
+        ['Run', 'Step Back (3x)', 'Play', 'Esperar 10s'],
+        'Playback chega ao fim uma vez, pára automaticamente, e step/event log ficam estáveis',
+        `Após chegar ao fim continuou instável: Step ${stepAfterLongPlay} → ${stepAfterExtraWait}, Event markers ${eventLogCountAfterLongPlay} → ${eventLogCountAfterExtraWait}, Playing=${playingAfterExtraWait}`,
+        'CRITICAL');
+    }
+
+    if (playingAfterExtraWait) {
+      await clickPlayPause().catch(() => {});
     }
   }
 

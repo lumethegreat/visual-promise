@@ -714,6 +714,44 @@ describe("execution.start / execution.end", () => {
 
 // ─── Immutability ─────────────────────────────────────────────────────────
 
+describe("step.back", () => {
+  it("rebuilds derived state instead of only decrementing the step index", () => {
+    const events: VPPEvent[] = [
+      makeEvent({ ...baseEvent(1), type: "execution.start", data: { snippet: "console.log('a')", entryId: "eval#1" } }),
+      makeEvent({ ...baseEvent(2), type: "console.output", data: { method: "log", args: ["a"] } }),
+      makeEvent({ ...baseEvent(3), type: "execution.end", data: { ok: true } }),
+    ];
+
+    let state = initialState();
+    for (const event of events) {
+      state = replayReducer(state, event);
+    }
+
+    expect(state.currentStepIndex).toBe(3);
+    expect(state.consoleEntries).toHaveLength(1);
+    expect(state.lastEvent?.type).toBe("execution.end");
+
+    const steppedBack = replayReducer(
+      state,
+      { type: "step.back" } as unknown as VPPEvent,
+    );
+
+    expect(steppedBack.currentStepIndex).toBe(2);
+    expect(steppedBack.eventLog).toEqual(events);
+    expect(steppedBack.consoleEntries).toHaveLength(1);
+    expect(steppedBack.lastEvent?.type).toBe("console.output");
+
+    const steppedBackAgain = replayReducer(
+      steppedBack,
+      { type: "step.back" } as unknown as VPPEvent,
+    );
+
+    expect(steppedBackAgain.currentStepIndex).toBe(1);
+    expect(steppedBackAgain.consoleEntries).toHaveLength(0);
+    expect(steppedBackAgain.lastEvent?.type).toBe("execution.start");
+  });
+});
+
 describe("immutability", () => {
   it("returns a new state object", () => {
     const state = initialState();

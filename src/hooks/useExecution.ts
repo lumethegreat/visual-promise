@@ -19,7 +19,7 @@ import {
 } from "react";
 import { validateSnippet } from "../lib/validator";
 import type { ValidationResult } from "../lib/validation-result";
-import { replayReducer } from "../lib/replay-reducer";
+import { replayReducer, applyReplayEvent } from "../lib/replay-reducer";
 import {
   createInitialReplayState,
   deriveUIStepInfo,
@@ -89,7 +89,7 @@ export function useExecution(): UseExecutionReturn {
     const { eventLog, currentStepIndex } = replayState;
     const nextEvent = eventLog[currentStepIndex];
     if (nextEvent !== undefined) {
-      dispatch(nextEvent);
+      dispatch({ type: "__APPLY_REPLAY_EVENT__", event: nextEvent } as unknown as VPPEvent);
     }
   }, [replayState]);
 

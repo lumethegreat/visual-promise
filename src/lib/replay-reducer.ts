@@ -49,7 +49,7 @@ function reindexQueue(
  * @param action - The VPPEvent to apply
  * @returns A new ReplayState with the event applied
  */
-export function replayReducer(
+export function applyReplayEvent(
   state: ReplayState,
   action: VPPEvent,
 ): ReplayState {
@@ -68,19 +68,6 @@ export function replayReducer(
   // Mutable scratch maps for this event — converted to ReadonlyMap on assignment
   const newPromises = new Map(state.promises);
   const newReactions = new Map(state.reactions);
-
-  // Handle replay control actions (not real VPP events from the worker)
-  const actionType: string = (action as { type: string }).type;
-  if (actionType === "step.back") {
-    return {
-      ...state,
-      currentStepIndex: Math.max(0, state.currentStepIndex - 1),
-    };
-  }
-
-  if (actionType === "__RESET__") {
-    return createInitialReplayState([]);
-  }
 
   switch (action.type) {
     // ── Execution lifecycle ─────────────────────────────────────────────────
@@ -384,4 +371,49 @@ export function replayReducer(
       return state;
     }
   }
+}
+
+export function replayReducer(
+  state: ReplayState,
+  action: VPPEvent,
+): ReplayState {
+  const actionType: string = (action as { type: string }).type;
+
+  if (actionType === "__APPLY_REPLAY_EVENT__") {
+    const replayEvent = (action as unknown as { event: VPPEvent }).event;
+    const baseState: ReplayState = {
+      ...state,
+      eventLog: [],
+      currentStepIndex: 0,
+    };
+    const applied = applyReplayEvent(baseState, replayEvent);
+
+    return {
+      ...applied,
+      eventLog: state.eventLog,
+      currentStepIndex: state.currentStepIndex + 1,
+    };
+  }
+
+  if (actionType === "step.back") {
+    const targetStepIndex = Math.max(0, state.currentStepIndex - 1);
+    const replayed = state.eventLog
+      .slice(0, targetStepIndex)
+      .reduce(
+        (acc, event) => applyReplayEvent(acc, event),
+        createInitialReplayState([]),
+      );
+
+    return {
+      ...replayed,
+      eventLog: state.eventLog,
+      currentStepIndex: targetStepIndex,
+    };
+  }
+
+  if (actionType === "__RESET__") {
+    return createInitialReplayState([]);
+  }
+
+  return applyReplayEvent(state, action);
 }
