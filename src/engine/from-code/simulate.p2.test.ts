@@ -51,4 +51,24 @@ f2();
     expect(r.ok).toBe(true);
     if (r.ok) expect(outputs(r.steps)).toEqual(['A', 'B']);
   });
+
+  it('handler calls inner async (subset; like case6 but different names)', () => {
+    const code = `const inner2 = async () => {
+  await Promise.resolve();
+  console.log("X1");
+};
+
+Promise.resolve()
+  .then(async () => {
+    inner2();
+  })
+  .then(() => {
+    console.log("Y1");
+  });
+`;
+
+    const r = simulate(code);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(outputs(r.steps)).toEqual(['X1', 'Y1']);
+  });
 });

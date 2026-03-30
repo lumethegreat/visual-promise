@@ -44,7 +44,11 @@ function outputValueFromConsoleArg(arg: t.Expression | t.SpreadElement | t.JSXNa
   return '<expr>';
 }
 
-function buildFunctionFromHandler(label: string, handler: t.Expression): FunctionDef {
+function buildFunctionFromHandler(
+  label: string,
+  handler: t.Expression,
+  knownAsyncFns: Set<string>
+): FunctionDef {
   // Only support arrow/function expressions.
   if (!t.isArrowFunctionExpression(handler) && !t.isFunctionExpression(handler)) {
     throw new Error('Unsupported handler type (expected function): ' + handler.type);
@@ -66,6 +70,16 @@ function buildFunctionFromHandler(label: string, handler: t.Expression): Functio
         text: `console.log(${arg0 ? textOfConsoleArg(arg0) : ''})`,
         output: arg0 ? outputValueFromConsoleArg(arg0) : '',
       });
+      continue;
+    }
+
+    // inner();  (call async fn declared at top-level)
+    if (t.isExpressionStatement(st) && t.isCallExpression(st.expression) && t.isIdentifier(st.expression.callee)) {
+      const callee = st.expression.callee.name;
+      if (!knownAsyncFns.has(callee)) {
+        throw new Error(`P2.2: chamada a função não suportada dentro de handler: ${callee}()`);
+      }
+      instrs.push({ kind: 'callAsync', text: `chamar ${callee}()`, callee });
       continue;
     }
 
@@ -150,9 +164,10 @@ export function toP1ProgramFromCode(code: string): P1Program {
     });
 
     // Build function defs
+    const knownAsyncFns = new Set(Object.keys(functions));
     chain.stages.forEach((stage, i) => {
       const lbl = stageLabels[i];
-      functions[lbl] = buildFunctionFromHandler(lbl, stage.handler);
+      functions[lbl] = buildFunctionFromHandler(lbl, stage.handler, knownAsyncFns);
     });
 
     const mkStageReaction = (i: number, trigger: 'fulfilled' | 'rejected'): EnqueueSpec => {
