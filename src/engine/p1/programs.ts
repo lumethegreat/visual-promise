@@ -2,13 +2,16 @@ import type { EnqueueSpec, Program } from './types';
 
 const reaction = (
   label: string,
-  handlerFn: string,
+  trigger: 'fulfilled' | 'rejected',
+  handlers: { onFulfilledHandler?: string; onRejectedHandler?: string },
   onFulfilled: EnqueueSpec[] = [],
   onRejected: EnqueueSpec[] = []
 ): EnqueueSpec => ({
   kind: 'reaction',
   label,
-  handlerFn,
+  trigger,
+  onFulfilledHandler: handlers.onFulfilledHandler,
+  onRejectedHandler: handlers.onRejectedHandler,
   onFulfilled,
   onRejected,
 });
@@ -49,7 +52,7 @@ export const PROGRAMS: Record<1 | 2 | 3 | 4 | 5 | 6, Program> = {
       {
         kind: 'promiseThenStart',
         text: 'Promise.resolve().then(...)\n→ agenda reaction(B)',
-        enqueue: reaction('reaction(B)', 'then callback'),
+        enqueue: reaction('reaction(B)', 'fulfilled', { onFulfilledHandler: 'then callback' }),
       },
     ],
     functions: {
@@ -78,7 +81,7 @@ export const PROGRAMS: Record<1 | 2 | 3 | 4 | 5 | 6, Program> = {
       {
         kind: 'promiseThenStart',
         text: 'Promise.resolve().then(...)\n→ agenda reaction(then1)',
-        enqueue: reaction('reaction(then1)', 'then1', [reaction('reaction(then2)', 'then2')]),
+        enqueue: reaction('reaction(then1)', 'fulfilled', { onFulfilledHandler: 'then1' }, [reaction('reaction(then2)', 'fulfilled', { onFulfilledHandler: 'then2' })]),
       },
       {
         kind: 'attachThen',
@@ -110,12 +113,13 @@ export const PROGRAMS: Record<1 | 2 | 3 | 4 | 5 | 6, Program> = {
         text: 'Promise.resolve().then(...)\n→ agenda reaction(asyncThen1)',
         enqueue: reaction(
           'reaction(asyncThen1)',
-          'asyncThen1',
+          'fulfilled',
+          { onFulfilledHandler: 'asyncThen1' },
           [
             resolveDerived(
               'resolve-derived',
               'resolve promise derivada\n→ agenda reaction(then2)',
-              [reaction('reaction(then2)', 'then2')]
+              [reaction('reaction(then2)', 'fulfilled', { onFulfilledHandler: 'then2' })]
             ),
           ]
         ),
@@ -175,7 +179,7 @@ export const PROGRAMS: Record<1 | 2 | 3 | 4 | 5 | 6, Program> = {
         text: 'Promise.resolve().then(...)\n→ agenda reaction(then1)',
         // importante: NÃO enfileirar resolve-derived via onEnd, porque neste caso
         // a timeline do dataset mostra resolve-derived já na fila no step de "termina".
-        enqueue: reaction('reaction(then1)', 'then1', []),
+        enqueue: reaction('reaction(then1)', 'fulfilled', { onFulfilledHandler: 'then1' }, []),
       },
     ],
     functions: {
@@ -190,7 +194,7 @@ export const PROGRAMS: Record<1 | 2 | 3 | 4 | 5 | 6, Program> = {
               resolveDerived(
               'resolve-derived',
               'resolve promise derivada\n→ agenda reaction(then2)',
-              [reaction('reaction(then2)', 'then2')]
+              [reaction('reaction(then2)', 'fulfilled', { onFulfilledHandler: 'then2' })]
             ),
             ],
           },

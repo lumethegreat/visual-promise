@@ -36,11 +36,12 @@ function enqueueSpecToMicrotask(program: Program, spec: EnqueueSpec, frameForRea
   }
 
   if (spec.kind === 'reaction') {
-    const frame = mkFrame(program, spec.handlerFn, 0, false);
     return {
       kind: 'reaction',
       label: spec.label,
-      frame,
+      trigger: spec.trigger,
+      onFulfilledHandler: spec.onFulfilledHandler,
+      onRejectedHandler: spec.onRejectedHandler,
       onFulfilled: spec.onFulfilled,
       onRejected: spec.onRejected,
     };
@@ -195,7 +196,19 @@ function runMicrotask(state: SimState, program: Program, m: Microtask) {
     // reset completion flag for this microtask
     state.threw = false;
 
-    state.callStack.push(m.frame);
+    const handler = m.trigger === 'fulfilled' ? m.onFulfilledHandler : m.onRejectedHandler;
+
+    // Sem handler aplicável: passthrough (propaga o estado)
+    if (!handler) {
+      snapshot(state, `${m.label} (no handler)\n→ propagate ${m.trigger}`);
+      const followUps = m.trigger === 'fulfilled' ? m.onFulfilled : m.onRejected;
+      for (const spec of followUps) enqueue(state, enqueueSpecToMicrotask(program, spec));
+      state.threw = false;
+      return;
+    }
+
+    // Com handler: executa e decide followups por completion (normal vs throw)
+    state.callStack.push(mkFrame(program, handler));
     runCallStackUntilIdle(state, program);
 
     const followUps = state.threw ? m.onRejected : m.onFulfilled;

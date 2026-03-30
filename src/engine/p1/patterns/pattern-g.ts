@@ -2,13 +2,16 @@ import type { EnqueueSpec, Program } from '../types';
 
 const reaction = (
   label: string,
-  handlerFn: string,
+  trigger: 'fulfilled' | 'rejected',
+  handlers: { onFulfilledHandler?: string; onRejectedHandler?: string },
   onFulfilled: EnqueueSpec[] = [],
   onRejected: EnqueueSpec[] = []
 ): EnqueueSpec => ({
   kind: 'reaction',
   label,
-  handlerFn,
+  trigger,
+  onFulfilledHandler: handlers.onFulfilledHandler,
+  onRejectedHandler: handlers.onRejectedHandler,
   onFulfilled,
   onRejected,
 });
@@ -26,7 +29,7 @@ export const PATTERN_G: Program = {
     {
       kind: 'promiseThenStart',
       text: 'Promise.resolve().then(...)\n→ agenda reaction(then1)',
-      enqueue: reaction('reaction(then1)', 'then1', [], [reaction('reaction(catch1)', 'catch1')]),
+      enqueue: reaction('reaction(then1)', 'fulfilled', { onFulfilledHandler: 'then1' }, [], [reaction('reaction(catch1)', 'rejected', { onRejectedHandler: 'catch1' })]),
     },
     {
       kind: 'attachThen',

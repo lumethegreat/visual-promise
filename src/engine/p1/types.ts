@@ -8,13 +8,16 @@ export type EnqueueSpec =
       /**
        * PromiseReactionJob.
        *
-       * Depois do handler correr, escolhemos a continuação com base no completion:
-       * - normal => onFulfilled
-       * - throw  => onRejected
+       * - `trigger` representa o estado da promise observada (fulfilled/rejected).
+       * - escolhe-se o handler com base no trigger.
+       * - se não houver handler aplicável, propaga-se o estado (passthrough).
+       * - se houver handler e este lançar, a derivada fica rejected.
        */
       kind: 'reaction';
       label: Label;
-      handlerFn: Label;
+      trigger: 'fulfilled' | 'rejected';
+      onFulfilledHandler?: Label;
+      onRejectedHandler?: Label;
       onFulfilled: EnqueueSpec[];
       onRejected: EnqueueSpec[];
     }
@@ -79,7 +82,9 @@ export type Microtask =
   | {
       kind: 'reaction';
       label: Label;
-      frame: Frame;
+      trigger: 'fulfilled' | 'rejected';
+      onFulfilledHandler?: Label;
+      onRejectedHandler?: Label;
       onFulfilled: EnqueueSpec[];
       onRejected: EnqueueSpec[];
     }
