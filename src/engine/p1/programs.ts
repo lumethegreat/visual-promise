@@ -1,10 +1,16 @@
 import type { EnqueueSpec, Program } from './types';
 
-const reaction = (label: string, handlerFn: string, onEnd: EnqueueSpec[] = []): EnqueueSpec => ({
+const reaction = (
+  label: string,
+  handlerFn: string,
+  onFulfilled: EnqueueSpec[] = [],
+  onRejected: EnqueueSpec[] = []
+): EnqueueSpec => ({
   kind: 'reaction',
   label,
   handlerFn,
-  onEnd,
+  onFulfilled,
+  onRejected,
 });
 
 const resolveDerived = (label: string, eventText: string, onRunEnqueue: EnqueueSpec[]): EnqueueSpec => ({

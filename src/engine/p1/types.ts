@@ -4,7 +4,20 @@ export type Label = string;
 
 export type EnqueueSpec =
   | { kind: 'resume'; label: Label }
-  | { kind: 'reaction'; label: Label; handlerFn: Label; onEnd: EnqueueSpec[] }
+  | {
+      /**
+       * PromiseReactionJob.
+       *
+       * Depois do handler correr, escolhemos a continuação com base no completion:
+       * - normal => onFulfilled
+       * - throw  => onRejected
+       */
+      kind: 'reaction';
+      label: Label;
+      handlerFn: Label;
+      onFulfilled: EnqueueSpec[];
+      onRejected: EnqueueSpec[];
+    }
   | {
       kind: 'resolveDerived';
       label: Label;
@@ -17,6 +30,14 @@ export type Instr =
   | { kind: 'log'; text: string; output: string }
   | { kind: 'awaitResolved'; text: string; resumeLabel: Label }
   | { kind: 'callAsync'; text: string; callee: Label }
+  | {
+      /**
+       * Lançar erro (completion abrupto).
+       * Por agora não modelamos try/catch dentro da mesma stack: o throw termina a microtask.
+       */
+      kind: 'throw';
+      text: string;
+    }
   | {
       kind: 'end';
       text: string;
@@ -55,11 +76,20 @@ export interface Frame {
 
 export type Microtask =
   | { kind: 'resume'; label: Label; frame: Frame }
-  | { kind: 'reaction'; label: Label; frame: Frame; onEnd: EnqueueSpec[] }
+  | {
+      kind: 'reaction';
+      label: Label;
+      frame: Frame;
+      onFulfilled: EnqueueSpec[];
+      onRejected: EnqueueSpec[];
+    }
   | { kind: 'resolveDerived'; label: Label; eventText: string; onRunEnqueue: EnqueueSpec[] };
 
 export interface SimState {
   callStack: Frame[];
   microtasks: Microtask[];
   timeline: TimelineStep[];
+
+  /** True se houve um throw durante a execução da microtask actual. */
+  threw: boolean;
 }

@@ -37,7 +37,13 @@ function enqueueSpecToMicrotask(program: Program, spec: EnqueueSpec, frameForRea
 
   if (spec.kind === 'reaction') {
     const frame = mkFrame(program, spec.handlerFn, 0, false);
-    return { kind: 'reaction', label: spec.label, frame, onEnd: spec.onEnd };
+    return {
+      kind: 'reaction',
+      label: spec.label,
+      frame,
+      onFulfilled: spec.onFulfilled,
+      onRejected: spec.onRejected,
+    };
   }
 
   if (spec.kind === 'resolveDerived') {
@@ -98,6 +104,17 @@ function runOneInstruction(state: SimState, program: Program): 'continue' | 'yie
     // after snapshot, push callee and run it synchronously until it yields/ends
     state.callStack.push(mkFrame(program, instr.callee));
     return 'continue';
+  }
+
+  if (instr.kind === 'throw') {
+    // Snapshot com a stack actual (antes do unwind)
+    snapshot(state, instr.text);
+
+    // Sem try/catch local: unwind até ao boundary da microtask
+    state.callStack = [];
+    state.threw = true;
+
+    return 'ended';
   }
 
   if (instr.kind === 'end') {
@@ -175,13 +192,21 @@ function runMicrotask(state: SimState, program: Program, m: Microtask) {
   }
 
   if (m.kind === 'reaction') {
+    // reset completion flag for this microtask
+    state.threw = false;
+
     state.callStack.push(m.frame);
     runCallStackUntilIdle(state, program);
 
-    // after handler finishes (in sync), enqueue follow-ups
-    for (const spec of m.onEnd) {
+    const followUps = state.threw ? m.onRejected : m.onFulfilled;
+
+    // enqueue follow-ups FIFO
+    for (const spec of followUps) {
       enqueue(state, enqueueSpecToMicrotask(program, spec));
     }
+
+    // clear flag after deciding
+    state.threw = false;
 
     return;
   }
@@ -208,6 +233,7 @@ export function simulateProgram(program: Program): TimelineStep[] {
     callStack: [],
     microtasks: [],
     timeline: [],
+    threw: false,
   };
 
   // Phase A: run all top-level sync actions
