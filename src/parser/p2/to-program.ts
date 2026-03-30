@@ -118,93 +118,195 @@ function unwrapChain(expr: t.Expression): { root: 'resolve' | 'reject'; stages: 
 }
 
 /**
- * P2.2 (subset): converte um snippet simples (Promise chains) para Program P1.
+ * P2.2 (subset): converte um snippet para Program P1.
  *
- * Suporte inicial:
- * - Promise.resolve()/Promise.reject()
- * - .then(fn) / .catch(fn) / .finally(fn)
- * - handlers com console.log("...") e/ou throw
- * - async handlers (introduz resolve-derived job)
+ * v2: suporta múltiplas statements top-level (sequenciais).
+ *
+ * Suporte actual:
+ * - Promise.resolve()/Promise.reject() chains (then/catch/finally)
+ * - async function declarations + calls (sem await no topo)
+ * - await Promise.resolve(...) dentro de async functions
+ * - console.log("...") dentro de handlers e async functions
+ * - throw dentro de handlers
  */
 export function toP1ProgramFromCode(code: string): P1Program {
   const ast = parseJs(code);
 
-  const exprStmts = ast.program.body.filter((n): n is t.ExpressionStatement => t.isExpressionStatement(n));
-  if (exprStmts.length !== 1) {
-    throw new Error('P2.2: por agora só suportamos 1 expressão top-level (uma chain).');
-  }
-
-  const expr = exprStmts[0].expression;
-  if (!t.isCallExpression(expr)) {
-    throw new Error('P2.2: esperado CallExpression.');
-  }
-
-  const chain = unwrapChain(expr);
-  if (!chain) {
-    throw new Error('P2.2: snippet não reconhecido como chain Promise.resolve/reject.');
-  }
-
   const functions: Record<string, FunctionDef> = {};
+  const topLevel: P1Program['topLevel'] = [];
 
-  const stageLabels = chain.stages.map((s, i) => {
-    const base = s.kind === 'then' ? `then${i + 1}` : s.kind === 'catch' ? `catch${i + 1}` : `finally${i + 1}`;
-    return base;
-  });
+  let chainCounter = 0;
 
-  // Build function defs
-  chain.stages.forEach((stage, i) => {
-    const lbl = stageLabels[i];
-    functions[lbl] = buildFunctionFromHandler(lbl, stage.handler);
-  });
+  const addChainFromExpr = (expr: t.Expression) => {
+    const chain = unwrapChain(expr);
+    if (!chain) throw new Error('P2.2: expressão não reconhecida como chain Promise.resolve/reject.');
 
-  // Build reaction specs for each stage, for both triggers
-  const mkStageReaction = (i: number, trigger: 'fulfilled' | 'rejected'): EnqueueSpec => {
-    const stage = chain.stages[i];
-    const lbl = stageLabels[i];
+    chainCounter += 1;
+    const prefix = `c${chainCounter}`;
 
-    // handler selection based on stage kind
-    const onFulfilledHandler = stage.kind === 'then' || stage.kind === 'finally' ? lbl : undefined;
-    const onRejectedHandler = stage.kind === 'catch' || stage.kind === 'finally' ? lbl : undefined;
+    const stageLabels = chain.stages.map((s, i) => {
+      const base = s.kind === 'then' ? `then${i + 1}` : s.kind === 'catch' ? `catch${i + 1}` : `finally${i + 1}`;
+      return `${prefix}.${base}`;
+    });
 
-    const nextIfFulfilled = i + 1 < chain.stages.length ? [mkStageReaction(i + 1, 'fulfilled')] : [];
-    const nextIfRejected = i + 1 < chain.stages.length ? [mkStageReaction(i + 1, 'rejected')] : [];
+    // Build function defs
+    chain.stages.forEach((stage, i) => {
+      const lbl = stageLabels[i];
+      functions[lbl] = buildFunctionFromHandler(lbl, stage.handler);
+    });
 
-    // async handler: insert resolve-derived between handler completion and next stage
-    const handlerIsAsync =
-      (t.isArrowFunctionExpression(stage.handler) || t.isFunctionExpression(stage.handler)) && !!stage.handler.async;
+    const mkStageReaction = (i: number, trigger: 'fulfilled' | 'rejected'): EnqueueSpec => {
+      const stage = chain.stages[i];
+      const lbl = stageLabels[i];
 
-    let onFulfilled: EnqueueSpec[] = nextIfFulfilled;
-    if (handlerIsAsync && onFulfilledHandler) {
-      onFulfilled = [
-        resolveDerived(
-          'resolve-derived',
-          'resolve promise derivada',
-          nextIfFulfilled
-        ),
-      ];
+      const onFulfilledHandler = stage.kind === 'then' || stage.kind === 'finally' ? lbl : undefined;
+      const onRejectedHandler = stage.kind === 'catch' || stage.kind === 'finally' ? lbl : undefined;
+
+      const nextIfFulfilled = i + 1 < chain.stages.length ? [mkStageReaction(i + 1, 'fulfilled')] : [];
+      const nextIfRejected = i + 1 < chain.stages.length ? [mkStageReaction(i + 1, 'rejected')] : [];
+
+      const handlerIsAsync =
+        (t.isArrowFunctionExpression(stage.handler) || t.isFunctionExpression(stage.handler)) && !!stage.handler.async;
+
+      let onFulfilled: EnqueueSpec[] = nextIfFulfilled;
+      if (handlerIsAsync && onFulfilledHandler) {
+        onFulfilled = [resolveDerived('resolve-derived', 'resolve promise derivada', nextIfFulfilled)];
+      }
+
+      return reaction(
+        `reaction(${lbl})`,
+        trigger,
+        { onFulfilledHandler, onRejectedHandler },
+        onFulfilled,
+        nextIfRejected
+      );
+    };
+
+    const startTrigger: 'fulfilled' | 'rejected' = chain.root === 'resolve' ? 'fulfilled' : 'rejected';
+    const startReaction = mkStageReaction(0, startTrigger);
+
+    topLevel.push({
+      kind: 'promiseThenStart',
+      text: chain.root === 'resolve' ? 'Promise.resolve() chain' : 'Promise.reject() chain',
+      enqueue: startReaction,
+    });
+  };
+
+  const addAsyncFunctionDecl = (name: string, fn: t.FunctionDeclaration | t.ArrowFunctionExpression) => {
+    if (!fn.async) return;
+
+    const body = t.isBlockStatement(fn.body) ? fn.body.body : [t.expressionStatement(fn.body as t.Expression)];
+
+    const instrs: Instr[] = [];
+    let awaitCounter = 0;
+
+    for (const st of body) {
+      // console.log("...")
+      if (t.isExpressionStatement(st) && isConsoleLogExpr(st.expression)) {
+        const call = st.expression;
+        const arg0 = call.arguments[0];
+        instrs.push({
+          kind: 'log',
+          text: `console.log(${arg0 ? textOfConsoleArg(arg0) : ''})`,
+          output: arg0 ? outputValueFromConsoleArg(arg0) : '',
+        });
+        continue;
+      }
+
+      // await Promise.resolve(...)
+      if (t.isExpressionStatement(st) && t.isAwaitExpression(st.expression) && isPromiseResolveCall(st.expression.argument)) {
+        awaitCounter += 1;
+        instrs.push({
+          kind: 'awaitResolved',
+          text: 'await Promise.resolve()\n→ suspende função\n→ agenda continuação',
+          resumeLabel: `resume(${name})#${awaitCounter}`,
+        });
+        continue;
+      }
+
+      // const x = await Promise.resolve(42)
+      if (t.isVariableDeclaration(st) && st.declarations.length === 1) {
+        const d = st.declarations[0];
+        if (d.init && t.isAwaitExpression(d.init) && isPromiseResolveCall(d.init.argument)) {
+          awaitCounter += 1;
+          instrs.push({
+            kind: 'awaitResolved',
+            text: 'await Promise.resolve(...)\n→ suspende função\n→ agenda continuação',
+            resumeLabel: `resume(${name})#${awaitCounter}`,
+          });
+          continue;
+        }
+      }
+
+      // ignore return
+      if (t.isReturnStatement(st)) {
+        instrs.push({ kind: 'end', text: 'return\n→ resolve promise', suppressSnapshot: true });
+        break;
+      }
+
+      // ignore empty
+      if (t.isEmptyStatement(st)) continue;
+
+      throw new Error(`P2.2: statement não suportada em async function ${name}: ${st.type}`);
     }
 
-    return reaction(
-      `reaction(${lbl})`,
-      trigger,
-      { onFulfilledHandler, onRejectedHandler },
-      onFulfilled,
-      nextIfRejected
-    );
+    if (instrs.length === 0 || instrs[instrs.length - 1].kind !== 'end') {
+      instrs.push({ kind: 'end', text: 'fim', suppressSnapshot: true });
+    }
+
+    functions[name] = { label: name, body: instrs };
   };
 
-  const startTrigger: 'fulfilled' | 'rejected' = chain.root === 'resolve' ? 'fulfilled' : 'rejected';
+  // Pass 1: collect async function decls and async arrow const decls
+  for (const node of ast.program.body) {
+    if (t.isFunctionDeclaration(node) && node.id?.name && node.async) {
+      addAsyncFunctionDecl(node.id.name, node);
+    }
 
-  const startReaction = mkStageReaction(0, startTrigger);
+    if (t.isVariableDeclaration(node)) {
+      for (const d of node.declarations) {
+        if (!t.isIdentifier(d.id) || !d.init) continue;
+        if (t.isArrowFunctionExpression(d.init) && d.init.async) {
+          addAsyncFunctionDecl(d.id.name, d.init);
+        }
+      }
+    }
+  }
 
-  return {
-    topLevel: [
-      {
-        kind: 'promiseThenStart',
-        text: chain.root === 'resolve' ? 'Promise.resolve() chain' : 'Promise.reject() chain',
-        enqueue: startReaction,
-      },
-    ],
-    functions,
-  };
+  // Pass 2: emit top-level actions in order
+  for (const node of ast.program.body) {
+    // ignore declarations (already collected)
+    if (t.isFunctionDeclaration(node)) continue;
+    if (t.isVariableDeclaration(node)) continue;
+
+    if (!t.isExpressionStatement(node)) {
+      throw new Error(`P2.2: top-level statement não suportada: ${node.type}`);
+    }
+
+    const expr = node.expression;
+
+    // call async function: example();
+    if (t.isCallExpression(expr) && t.isIdentifier(expr.callee)) {
+      const name = expr.callee.name;
+      if (!functions[name]) {
+        throw new Error(`P2.2: chamada a função desconhecida: ${name}()`);
+      }
+      topLevel.push({ kind: 'callAsync', text: `chamar ${name}()`, fn: name });
+      continue;
+    }
+
+    // promise chain
+    if (t.isCallExpression(expr)) {
+      addChainFromExpr(expr);
+      continue;
+    }
+
+    throw new Error(`P2.2: expressão top-level não suportada: ${expr.type}`);
+  }
+
+  if (topLevel.length === 0) {
+    throw new Error('P2.2: não há nada para simular (top-level vazio).');
+  }
+
+  return { topLevel, functions };
 }
