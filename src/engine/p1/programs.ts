@@ -7,9 +7,10 @@ const reaction = (label: string, handlerFn: string, onEnd: EnqueueSpec[] = []): 
   onEnd,
 });
 
-const resolveDerived = (label: string, onRunEnqueue: EnqueueSpec[]): EnqueueSpec => ({
+const resolveDerived = (label: string, eventText: string, onRunEnqueue: EnqueueSpec[]): EnqueueSpec => ({
   kind: 'resolveDerived',
   label,
+  eventText,
   onRunEnqueue,
 });
 
@@ -104,7 +105,13 @@ export const PROGRAMS: Record<1 | 2 | 3 | 4 | 5 | 6, Program> = {
         enqueue: reaction(
           'reaction(asyncThen1)',
           'asyncThen1',
-          [resolveDerived('resolve-derived', [reaction('reaction(then2)', 'then2')])]
+          [
+            resolveDerived(
+              'resolve-derived',
+              'resolve promise derivada\n→ agenda reaction(then2)',
+              [reaction('reaction(then2)', 'then2')]
+            ),
+          ]
         ),
       },
       {
@@ -174,7 +181,11 @@ export const PROGRAMS: Record<1 | 2 | 3 | 4 | 5 | 6, Program> = {
             kind: 'end',
             text: 'then1 termina\n→ devolve Promise fulfilled',
             enqueueBeforeSnapshot: [
-              resolveDerived('resolve-derived', [reaction('reaction(then2)', 'then2')]),
+              resolveDerived(
+              'resolve-derived',
+              'resolve promise derivada\n→ agenda reaction(then2)',
+              [reaction('reaction(then2)', 'then2')]
+            ),
             ],
           },
         ],

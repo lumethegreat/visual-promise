@@ -5,7 +5,13 @@ export type Label = string;
 export type EnqueueSpec =
   | { kind: 'resume'; label: Label }
   | { kind: 'reaction'; label: Label; handlerFn: Label; onEnd: EnqueueSpec[] }
-  | { kind: 'resolveDerived'; label: Label; onRunEnqueue: EnqueueSpec[] };
+  | {
+      kind: 'resolveDerived';
+      label: Label;
+      /** Texto do evento (obrigatório) para evitar special-cases no engine. */
+      eventText: string;
+      onRunEnqueue: EnqueueSpec[];
+    };
 
 export type Instr =
   | { kind: 'log'; text: string; output: string }
@@ -50,7 +56,7 @@ export interface Frame {
 export type Microtask =
   | { kind: 'resume'; label: Label; frame: Frame }
   | { kind: 'reaction'; label: Label; frame: Frame; onEnd: EnqueueSpec[] }
-  | { kind: 'resolveDerived'; label: Label; onRunEnqueue: EnqueueSpec[] };
+  | { kind: 'resolveDerived'; label: Label; eventText: string; onRunEnqueue: EnqueueSpec[] };
 
 export interface SimState {
   callStack: Frame[];

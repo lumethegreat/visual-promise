@@ -41,7 +41,12 @@ function enqueueSpecToMicrotask(program: Program, spec: EnqueueSpec, frameForRea
   }
 
   if (spec.kind === 'resolveDerived') {
-    return { kind: 'resolveDerived', label: spec.label, onRunEnqueue: spec.onRunEnqueue };
+    return {
+      kind: 'resolveDerived',
+      label: spec.label,
+      eventText: spec.eventText,
+      onRunEnqueue: spec.onRunEnqueue,
+    };
   }
 
   // exhaustiveness
@@ -184,7 +189,7 @@ function runMicrotask(state: SimState, program: Program, m: Microtask) {
   if (m.kind === 'resolveDerived') {
     // This job is displayed as a stack frame
     state.callStack.push({ fn: m.label, ip: 0, justResumed: false });
-    snapshot(state, 'resolve promise derivada\n→ agenda reaction(then2)');
+    snapshot(state, m.eventText);
     state.callStack.pop();
 
     for (const spec of m.onRunEnqueue) {
