@@ -51,7 +51,8 @@ function buildFunctionFromHandler(
   opts?: {
     onEndEnqueueAfterSnapshot?: EnqueueSpec[];
     onThrowEnqueueAfterSnapshot?: EnqueueSpec[];
-  }
+  },
+  registerFn?: (label: string, handler: t.Expression) => void
 ): FunctionDef {
   // Only support arrow/function expressions.
   if (!t.isArrowFunctionExpression(handler) && !t.isFunctionExpression(handler)) {
@@ -64,12 +65,89 @@ function buildFunctionFromHandler(
 
   const instrs: Instr[] = [];
   let awaitCounter = 0;
+  let thenCbCounter = 0;
 
   for (const st of bodyStmts) {
     // return ...
     if (t.isReturnStatement(st)) {
       // return; (end handler)
       if (!st.argument) {
+        instrs.push({
+          kind: 'end',
+          text: 'return\n→ resolve promise',
+          suppressSnapshot: true,
+          enqueueAfterSnapshot: opts?.onEndEnqueueAfterSnapshot,
+        });
+        break;
+      }
+
+      // return await inner2();  (await async fn declared at top-level)
+      if (
+        t.isAwaitExpression(st.argument) &&
+        t.isCallExpression(st.argument.argument) &&
+        t.isIdentifier(st.argument.argument.callee)
+      ) {
+        const callee = st.argument.argument.callee.name;
+        if (!knownAsyncFns.has(callee)) {
+          throw new Error(`P2.2: return await de função não suportada dentro de handler: ${callee}()`);
+        }
+        awaitCounter += 1;
+        instrs.push({
+          kind: 'awaitCallAsync',
+          text: `return await ${callee}()\n→ suspende handler\n→ só termina quando ${callee} termina`,
+          callee,
+          resumeLabel: `resume(${label})#returnawait${awaitCounter}`,
+        });
+        instrs.push({
+          kind: 'end',
+          text: 'return\n→ resolve promise',
+          suppressSnapshot: true,
+          enqueueAfterSnapshot: opts?.onEndEnqueueAfterSnapshot,
+        });
+        break;
+      }
+
+      // return inner2().then(() => ...)
+      if (
+        t.isCallExpression(st.argument) &&
+        t.isMemberExpression(st.argument.callee) &&
+        t.isIdentifier(st.argument.callee.property) &&
+        st.argument.callee.property.name === 'then'
+      ) {
+        const obj = st.argument.callee.object;
+        const thenHandler = st.argument.arguments[0] as t.Expression | undefined;
+        if (!thenHandler) {
+          throw new Error('P2.2: return <promise>.then(...) requer 1 handler.');
+        }
+        if (!t.isArrowFunctionExpression(thenHandler) && !t.isFunctionExpression(thenHandler)) {
+          throw new Error('P2.2: handler de .then(...) não suportado (esperado function): ' + thenHandler.type);
+        }
+
+        // object must be inner2()
+        if (!t.isCallExpression(obj) || !t.isIdentifier(obj.callee)) {
+          throw new Error('P2.2: apenas suportamos return innerAsync().then(...) dentro de handler.');
+        }
+        const callee = obj.callee.name;
+        if (!knownAsyncFns.has(callee)) {
+          throw new Error(`P2.2: return de .then em função não suportada dentro de handler: ${callee}()`);
+        }
+
+        if (!registerFn) {
+          throw new Error('P2.2: internal error — missing registerFn for nested .then handler');
+        }
+
+        thenCbCounter += 1;
+        const cbLabel = `${label}.thenret${thenCbCounter}`;
+        registerFn(cbLabel, thenHandler);
+
+        awaitCounter += 1;
+        instrs.push({
+          kind: 'awaitCallAsync',
+          text: `return ${callee}().then(...)\n→ espera ${callee}()\n→ corre handler de then`,
+          callee,
+          resumeLabel: `resume(${label})#returnthen${awaitCounter}`,
+        });
+        instrs.push({ kind: 'callAsync', text: `.then(handler)`, callee: cbLabel });
         instrs.push({
           kind: 'end',
           text: 'return\n→ resolve promise',
@@ -240,6 +318,11 @@ export function toP1ProgramFromCode(code: string): P1Program {
     // For calls/awaits inside handlers, only top-level declared async fns are allowed.
     const knownAsyncFns = new Set(declaredAsyncFns);
 
+    const registerFn = (lbl: string, h: t.Expression) => {
+      if (functions[lbl]) return;
+      functions[lbl] = buildFunctionFromHandler(lbl, h, knownAsyncFns, undefined, registerFn);
+    };
+
     const mkStageReaction = (i: number, trigger: 'fulfilled' | 'rejected'): EnqueueSpec => {
       const stage = chain.stages[i];
       const baseLbl = stageLabels[i];
@@ -277,10 +360,16 @@ export function toP1ProgramFromCode(code: string): P1Program {
           ? [resolveDerived('resolve-derived', 'reject promise derivada', throwFollowUps)]
           : undefined;
 
-        functions[handlerLabel] = buildFunctionFromHandler(handlerLabel, stage.handler, knownAsyncFns, {
-          onEndEnqueueAfterSnapshot,
-          onThrowEnqueueAfterSnapshot,
-        });
+        functions[handlerLabel] = buildFunctionFromHandler(
+          handlerLabel,
+          stage.handler,
+          knownAsyncFns,
+          {
+            onEndEnqueueAfterSnapshot,
+            onThrowEnqueueAfterSnapshot,
+          },
+          registerFn
+        );
       }
 
       // Passthrough follow-ups (when no handler applies)

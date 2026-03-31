@@ -113,4 +113,45 @@ Promise.resolve()
     expect(r.ok).toBe(true);
     if (r.ok) expect(outputs(r.steps)).toEqual(['X1', 'Y1']);
   });
+
+  it('handler returns await inner async (subset; return await inner2() behaves like awaiting)', () => {
+    const code = `const inner2 = async () => {
+  await Promise.resolve();
+  console.log("X1");
+};
+
+Promise.resolve()
+  .then(async () => {
+    return await inner2();
+    console.log("Z1");
+  })
+  .then(() => {
+    console.log("Y1");
+  });
+`;
+
+    const r = simulate(code);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(outputs(r.steps)).toEqual(['X1', 'Y1']);
+  });
+
+  it('handler returns inner async .then (subset; return inner2().then(Z1) blocks chain until Z1)', () => {
+    const code = `const inner2 = async () => {
+  await Promise.resolve();
+  console.log("X1");
+};
+
+Promise.resolve()
+  .then(async () => {
+    return inner2().then(() => console.log("Z1"));
+  })
+  .then(() => {
+    console.log("Y1");
+  });
+`;
+
+    const r = simulate(code);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(outputs(r.steps)).toEqual(['X1', 'Z1', 'Y1']);
+  });
 });
