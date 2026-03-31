@@ -55,6 +55,14 @@ export function App() {
   const [customSteps, setCustomSteps] = useState<TimelineStep[] | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
 
+  const steps = useMemo(
+    () => (customSteps !== null ? customSteps : caseId != null ? simulateCase(caseId).steps : []),
+    [caseId, customSteps]
+  );
+  const maxIndex = Math.max(0, steps.length - 1);
+
+  const ui = useUiState(maxIndex);
+
   const runCode = useCallback(
     (src: string) => {
       const result = simulate(src);
@@ -68,16 +76,8 @@ export function App() {
       ui.setStepIndex(0);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
+    [ui]
   );
-
-  const steps = useMemo(
-    () => (customSteps !== null ? customSteps : caseId != null ? simulateCase(caseId).steps : []),
-    [caseId, customSteps]
-  );
-  const maxIndex = Math.max(0, steps.length - 1);
-
-  const ui = useUiState(maxIndex);
 
   const canBack = ui.stepIndex > 0;
   const canForward = ui.stepIndex < maxIndex;
