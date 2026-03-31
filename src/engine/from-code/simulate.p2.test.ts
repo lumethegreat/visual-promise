@@ -154,4 +154,51 @@ Promise.resolve()
     expect(r.ok).toBe(true);
     if (r.ok) expect(outputs(r.steps)).toEqual(['X1', 'Z1', 'Y1']);
   });
+
+  it('handler returns inner async .then(async cb) (subset; cb may await Promise.resolve)', () => {
+    const code = `const inner2 = async () => {
+  await Promise.resolve();
+  console.log("X1");
+};
+
+Promise.resolve()
+  .then(async () => {
+    return inner2().then(async () => {
+      await Promise.resolve();
+      console.log("Z1");
+    });
+  })
+  .then(() => {
+    console.log("Y1");
+  });
+`;
+
+    const r = simulate(code);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(outputs(r.steps)).toEqual(['X1', 'Z1', 'Y1']);
+  });
+
+  it('handler returns inner async .then(async cb with multiple stmts) ordering: X1,Z0,Z1,Y1', () => {
+    const code = `const inner2 = async () => {
+  await Promise.resolve();
+  console.log("X1");
+};
+
+Promise.resolve()
+  .then(async () => {
+    return inner2().then(async () => {
+      console.log("Z0");
+      await Promise.resolve();
+      console.log("Z1");
+    });
+  })
+  .then(() => {
+    console.log("Y1");
+  });
+`;
+
+    const r = simulate(code);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(outputs(r.steps)).toEqual(['X1', 'Z0', 'Z1', 'Y1']);
+  });
 });

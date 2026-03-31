@@ -147,7 +147,22 @@ function buildFunctionFromHandler(
           callee,
           resumeLabel: `resume(${label})#returnthen${awaitCounter}`,
         });
-        instrs.push({ kind: 'callAsync', text: `.then(handler)`, callee: cbLabel });
+
+        const thenIsAsync =
+          (t.isArrowFunctionExpression(thenHandler) || t.isFunctionExpression(thenHandler)) && !!thenHandler.async;
+
+        if (thenIsAsync) {
+          awaitCounter += 1;
+          instrs.push({
+            kind: 'awaitCallAsync',
+            text: `.then(async handler)\n→ espera handler terminar`,
+            callee: cbLabel,
+            resumeLabel: `resume(${label})#thenasync${awaitCounter}`,
+          });
+        } else {
+          instrs.push({ kind: 'callAsync', text: `.then(handler)`, callee: cbLabel });
+        }
+
         instrs.push({
           kind: 'end',
           text: 'return\n→ resolve promise',
@@ -190,6 +205,17 @@ function buildFunctionFromHandler(
         kind: 'log',
         text: `console.log(${arg0 ? textOfConsoleArg(arg0) : ''})`,
         output: arg0 ? outputValueFromConsoleArg(arg0) : '',
+      });
+      continue;
+    }
+
+    // await Promise.resolve(...)
+    if (t.isExpressionStatement(st) && t.isAwaitExpression(st.expression) && isPromiseResolveCall(st.expression.argument)) {
+      awaitCounter += 1;
+      instrs.push({
+        kind: 'awaitResolved',
+        text: 'await Promise.resolve()\n→ suspende função\n→ agenda continuação',
+        resumeLabel: `resume(${label})#awaitpr${awaitCounter}`,
       });
       continue;
     }
