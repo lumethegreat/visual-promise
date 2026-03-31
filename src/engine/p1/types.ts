@@ -99,12 +99,17 @@ export interface Frame {
   ip: number;
   /** When true, the next log should be prefixed with "retoma após await". */
   justResumed: boolean;
+  /** Quantos `awaitResolved` já foram executados nesta frame (subset). */
+  awaitsDone: number;
 
   /**
    * Quando definido, esta frame foi criada por um `await <asyncFn>()`.
    * Ao terminar (normalmente), o engine enfileira um `resume` para retomar a frame guardada.
    */
-  onReturnResume?: { label: Label; frame: { fn: Label; ip: number; justResumed: boolean; onReturnEnqueue?: EnqueueSpec[] } };
+  onReturnResume?: {
+    label: Label;
+    frame: { fn: Label; ip: number; justResumed: boolean; awaitsDone: number; onReturnEnqueue?: EnqueueSpec[] };
+  };
 
   /**
    * Microtasks a enfileirar quando esta frame termina (normal completion).

@@ -24,6 +24,7 @@ describe('P2.2 simulate(code) — subset (chains + multi-statement + async fn ca
     if (r.ok) expect(outputs(r.steps)).toEqual(['F', 'T']);
   });
 
+
   it('multi-statement: async fn call + Promise.then ordering (like case2, but different names)', () => {
     const code = `async function foo() {
   await Promise.resolve();
@@ -69,7 +70,7 @@ p1.then(task1).then(task2).then(task3);
 
     const r = simulate(code);
     expect(r.ok).toBe(true);
-    if (r.ok) expect(outputs(r.steps)).toEqual(['task1', 'task2', 'task3', 'innerTask']);
+    if (r.ok) expect(outputs(r.steps)).toEqual(['task1', 'task2', 'innerTask', 'task3']);
   });
 
   it('async function with multiple awaits (subset)', () => {

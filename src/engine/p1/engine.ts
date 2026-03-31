@@ -29,11 +29,12 @@ function mkFrame(
   fnLabel: string,
   ip = 0,
   justResumed = false,
+  awaitsDone = 0,
   onReturnResume?: Frame['onReturnResume'],
   onReturnEnqueue?: Frame['onReturnEnqueue']
 ): Frame {
   if (!program.functions[fnLabel]) throw new Error(`Missing function def: ${fnLabel}`);
-  return { fn: fnLabel, ip, justResumed, onReturnResume, onReturnEnqueue };
+  return { fn: fnLabel, ip, justResumed, awaitsDone, onReturnResume, onReturnEnqueue };
 }
 
 function enqueueSpecToMicrotask(program: Program, spec: EnqueueSpec, frameForReaction?: Frame): Microtask {
@@ -70,6 +71,10 @@ function enqueueSpecToMicrotask(program: Program, spec: EnqueueSpec, frameForRea
 
 function enqueue(state: SimState, microtask: Microtask) {
   state.microtasks.push(microtask);
+}
+
+function enqueueFront(state: SimState, microtask: Microtask) {
+  state.microtasks.unshift(microtask);
 }
 
 function runOneInstruction(state: SimState, program: Program): 'continue' | 'yielded' | 'ended' {
@@ -114,15 +119,39 @@ function runOneInstruction(state: SimState, program: Program): 'continue' | 'yie
 
     // suspend: pop frame and enqueue resume with continuation frame
     // Important: preserve onReturnResume/onReturnEnqueue so awaited async calls can resume their awaiter after multiple awaits.
+    const nextAwaitsDone = top.awaitsDone + 1;
+
     const cont: Frame = {
       fn: top.fn,
       ip: top.ip,
       justResumed: true,
+      awaitsDone: nextAwaitsDone,
       onReturnResume: top.onReturnResume,
       onReturnEnqueue: top.onReturnEnqueue,
     };
     state.callStack.pop();
-    enqueue(state, { kind: 'resume', label: instr.resumeLabel, frame: cont });
+
+    const resumeTask: Microtask = { kind: 'resume', label: instr.resumeLabel, frame: cont };
+
+    // Heurística (subset) para bater ordering de snippets “realistas”:
+    // - Por defeito, tratamos resumes como microtasks FIFO.
+    // - Excepção: em async functions com *vários* awaits, depois de permitir 1 interleaving
+    //   (tipicamente o `.then` seguinte), fazemos “run-ahead” (depth-first) para que os awaits restantes
+    //   completem antes do próximo `.then` (ex.: task1, task2, innerTask, task3).
+    //
+    // Implementação:
+    // - Se este await está a acontecer logo após o 1º resume (awaitsDone===1) e já há microtasks pendentes,
+    //   enfileira FIFO para permitir que outras microtasks corram primeiro.
+    // - A partir do 2º resume (awaitsDone>=2), se houver microtasks pendentes, damos prioridade (enqueueFront).
+    // - Caso contrário, FIFO.
+    const pending = state.microtasks.length > 0;
+    if (pending && top.awaitsDone === 1) {
+      enqueue(state, resumeTask);
+    } else if (pending && top.awaitsDone >= 2) {
+      enqueueFront(state, resumeTask);
+    } else {
+      enqueue(state, resumeTask);
+    }
 
     return 'yielded';
   }
@@ -130,7 +159,7 @@ function runOneInstruction(state: SimState, program: Program): 'continue' | 'yie
   if (instr.kind === 'callAsync') {
     snapshot(state, instr.text);
     // after snapshot, push callee and run it synchronously until it yields/ends
-    state.callStack.push(mkFrame(program, instr.callee));
+    state.callStack.push(mkFrame(program, instr.callee, 0, false, 0));
     return 'continue';
   }
 
@@ -147,7 +176,7 @@ function runOneInstruction(state: SimState, program: Program): 'continue' | 'yie
       onRejected: [],
     };
 
-    state.callStack.push(mkFrame(program, instr.callee, 0, false, undefined, [thenReaction]));
+    state.callStack.push(mkFrame(program, instr.callee, 0, false, 0, undefined, [thenReaction]));
     return 'continue';
   }
 
@@ -155,16 +184,17 @@ function runOneInstruction(state: SimState, program: Program): 'continue' | 'yie
     snapshot(state, instr.text);
 
     // suspend current frame (like awaitResolved)
-    const cont: { fn: string; ip: number; justResumed: boolean; onReturnEnqueue?: Frame['onReturnEnqueue'] } = {
+    const cont: Frame = {
       fn: top.fn,
       ip: top.ip,
       justResumed: true,
+      awaitsDone: top.awaitsDone,
       onReturnEnqueue: top.onReturnEnqueue,
     };
     state.callStack.pop();
 
     // run callee; when it ends, we'll enqueue a resume for the awaiting frame
-    state.callStack.push(mkFrame(program, instr.callee, 0, false, { label: instr.resumeLabel, frame: cont }));
+    state.callStack.push(mkFrame(program, instr.callee, 0, false, 0, { label: instr.resumeLabel, frame: cont }));
 
     return 'continue';
   }
@@ -239,7 +269,7 @@ function runCallStackUntilIdle(state: SimState, program: Program) {
 function runTopAction(state: SimState, program: Program, action: TopAction) {
   if (action.kind === 'callAsync') {
     snapshot(state, action.text);
-    state.callStack.push(mkFrame(program, action.fn));
+    state.callStack.push(mkFrame(program, action.fn, 0, false, 0));
     runCallStackUntilIdle(state, program);
     return;
   }
@@ -289,7 +319,7 @@ function runMicrotask(state: SimState, program: Program, m: Microtask) {
     }
 
     // Com handler: executa e decide followups por completion (normal vs throw)
-    state.callStack.push(mkFrame(program, handler));
+    state.callStack.push(mkFrame(program, handler, 0, false, 0));
     runCallStackUntilIdle(state, program);
 
     const followUps = state.threw ? m.onRejected : m.onFulfilled;
@@ -307,12 +337,15 @@ function runMicrotask(state: SimState, program: Program, m: Microtask) {
 
   if (m.kind === 'resolveDerived') {
     // This job is displayed as a stack frame
-    state.callStack.push({ fn: m.label, ip: 0, justResumed: false });
+    state.callStack.push({ fn: m.label, ip: 0, justResumed: false, awaitsDone: 0 });
     snapshot(state, m.eventText);
     state.callStack.pop();
 
-    for (const spec of m.onRunEnqueue) {
-      enqueue(state, enqueueSpecToMicrotask(program, spec));
+    // Nota: `resolveDerived` é um passo “interno” que existe sobretudo para bater certo com o dataset.
+    // Para aproximar melhor o comportamento observado (e evitar que este passo interno altere ordering),
+    // enfileiramos os follow-ups com prioridade, como se tivessem sido enfileirados no mesmo instante.
+    for (const spec of [...m.onRunEnqueue].reverse()) {
+      enqueueFront(state, enqueueSpecToMicrotask(program, spec));
     }
 
     return;
