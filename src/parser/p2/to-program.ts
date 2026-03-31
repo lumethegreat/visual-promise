@@ -8,6 +8,47 @@ type ChainStage =
   | { kind: 'catch'; handler: t.Expression }
   | { kind: 'finally'; handler: t.Expression };
 
+function handlerReturnsKnownAsyncPromise(handler: t.Expression, knownAsyncFns: Set<string>): boolean {
+  if (!t.isArrowFunctionExpression(handler) && !t.isFunctionExpression(handler)) return false;
+
+  const exprBody = !t.isBlockStatement(handler.body) ? (handler.body as t.Expression) : null;
+  const stmts = t.isBlockStatement(handler.body) ? handler.body.body : [];
+
+  const checkExpr = (expr: t.Expression | null | undefined): boolean => {
+    if (!expr) return false;
+
+    // inner2()
+    if (t.isCallExpression(expr) && t.isIdentifier(expr.callee) && knownAsyncFns.has(expr.callee.name)) {
+      return true;
+    }
+
+    // inner2().then(...)
+    if (
+      t.isCallExpression(expr) &&
+      t.isMemberExpression(expr.callee) &&
+      t.isIdentifier(expr.callee.property) &&
+      expr.callee.property.name === 'then'
+    ) {
+      const obj = expr.callee.object;
+      if (t.isCallExpression(obj) && t.isIdentifier(obj.callee) && knownAsyncFns.has(obj.callee.name)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  // Arrow expression body implies an implicit return.
+  if (exprBody) return checkExpr(exprBody);
+
+  // Block body: look for `return <expr>`.
+  for (const st of stmts) {
+    if (t.isReturnStatement(st)) return checkExpr(st.argument as t.Expression | null | undefined);
+  }
+
+  return false;
+}
+
 function reaction(
   label: string,
   trigger: 'fulfilled' | 'rejected',
@@ -61,7 +102,7 @@ function buildFunctionFromHandler(
 
   const bodyStmts: t.Statement[] = t.isBlockStatement(handler.body)
     ? handler.body.body
-    : [t.expressionStatement(handler.body)];
+    : [t.returnStatement(handler.body as t.Expression)];
 
   const instrs: Instr[] = [];
   let awaitCounter = 0;
@@ -72,6 +113,24 @@ function buildFunctionFromHandler(
     if (t.isReturnStatement(st)) {
       // return; (end handler)
       if (!st.argument) {
+        instrs.push({
+          kind: 'end',
+          text: 'return\n→ resolve promise',
+          suppressSnapshot: true,
+          enqueueAfterSnapshot: opts?.onEndEnqueueAfterSnapshot,
+        });
+        break;
+      }
+
+      // return console.log(...)
+      if (isConsoleLogExpr(st.argument)) {
+        const call = st.argument;
+        const arg0 = call.arguments[0];
+        instrs.push({
+          kind: 'log',
+          text: `console.log(${arg0 ? textOfConsoleArg(arg0) : ''})`,
+          output: arg0 ? outputValueFromConsoleArg(arg0) : '',
+        });
         instrs.push({
           kind: 'end',
           text: 'return\n→ resolve promise',
@@ -359,8 +418,10 @@ export function toP1ProgramFromCode(code: string): P1Program {
       const handlerIsAsync =
         (t.isArrowFunctionExpression(stage.handler) || t.isFunctionExpression(stage.handler)) && !!stage.handler.async;
 
-      // Async finally needs distinct handler labels per trigger, because normal completion preserves the trigger.
-      const splitFinally = stage.kind === 'finally' && handlerIsAsync;
+      const handlerReturnsPromise = handlerReturnsKnownAsyncPromise(stage.handler, knownAsyncFns);
+
+      // Async (or promise-returning) finally needs distinct handler labels per trigger, because normal completion preserves the trigger.
+      const splitFinally = stage.kind === 'finally' && (handlerIsAsync || handlerReturnsPromise);
       const fulfilledLbl = splitFinally ? `${baseLbl}.fulfilled` : baseLbl;
       const rejectedLbl = splitFinally ? `${baseLbl}.rejected` : baseLbl;
 
@@ -369,6 +430,7 @@ export function toP1ProgramFromCode(code: string): P1Program {
 
       // The handler that will actually run (if any) for this microtask trigger.
       const handlerLabel = trigger === 'fulfilled' ? onFulfilledHandler : onRejectedHandler;
+      const hasHandler = !!handlerLabel;
 
       // Normal completion follow-ups (note: finally preserves trigger on normal completion)
       const normalFollowUps: EnqueueSpec[] =
@@ -376,13 +438,16 @@ export function toP1ProgramFromCode(code: string): P1Program {
 
       const throwFollowUps: EnqueueSpec[] = nextIfRejected;
 
+      // A handler can defer the continuation either by being `async` or by returning a Promise (adoption).
+      const defersContinuation = hasHandler && (handlerIsAsync || handlerReturnsPromise);
+
       // Build handler function def lazily (only if needed).
       if (handlerLabel && !functions[handlerLabel]) {
-        const onEndEnqueueAfterSnapshot = handlerIsAsync
+        const onEndEnqueueAfterSnapshot = defersContinuation
           ? [resolveDerived('resolve-derived', 'resolve promise derivada', normalFollowUps)]
           : undefined;
 
-        const onThrowEnqueueAfterSnapshot = handlerIsAsync
+        const onThrowEnqueueAfterSnapshot = defersContinuation
           ? [resolveDerived('resolve-derived', 'reject promise derivada', throwFollowUps)]
           : undefined;
 
@@ -402,9 +467,9 @@ export function toP1ProgramFromCode(code: string): P1Program {
       const passthroughFulfilled = nextIfFulfilled;
       const passthroughRejected = nextIfRejected;
 
-      // For async handlers, the continuation is scheduled by the handler itself (on end/throw).
-      const onFulfilled = handlerIsAsync && handlerLabel ? [] : handlerLabel ? normalFollowUps : passthroughFulfilled;
-      const onRejected = handlerIsAsync && handlerLabel ? [] : handlerLabel ? throwFollowUps : passthroughRejected;
+      // If the handler defers continuation, it will enqueue the derived resolution/rejection on end/throw.
+      const onFulfilled = defersContinuation ? [] : handlerLabel ? normalFollowUps : passthroughFulfilled;
+      const onRejected = defersContinuation ? [] : handlerLabel ? throwFollowUps : passthroughRejected;
 
       return reaction(
         `reaction(${baseLbl})`,
