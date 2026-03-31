@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
 import { simulateCase } from '../engine/simulator';
+import { simulate } from '../engine/from-code/simulate';
 import type { DatasetCaseId } from '../engine/dataset/expected';
 import { SNIPPETS } from '../engine/dataset/snippets';
+import type { TimelineStep } from '../engine/types';
 import { styles } from './styles';
 import {
   CallStackView,
@@ -22,10 +24,57 @@ const CASES: Array<{ id: DatasetCaseId; label: string }> = [
   { id: 6, label: 'Caso 6 — inner async sem await externo' },
 ];
 
-export function App() {
-  const [caseId, setCaseId] = useState<DatasetCaseId>(1);
+const DEFAULT_CODE = `const p1 = Promise.resolve();
 
-  const steps = useMemo(() => simulateCase(caseId).steps, [caseId]);
+const innerTask = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  console.log('innerTask');
+};
+
+const task1 = async () => {
+  console.log('task1');
+  innerTask();
+};
+
+const task2 = () => {
+  console.log('task2');
+};
+
+const task3 = async () => {
+  console.log('task3');
+};
+
+p1.then(task1).then(task2).then(task3);`;
+
+export function App() {
+  const [caseId, setCaseId] = useState<DatasetCaseId | null>(null);
+  const [code, setCode] = useState(DEFAULT_CODE);
+  const [customSteps, setCustomSteps] = useState<TimelineStep[] | null>(null);
+  const [runError, setRunError] = useState<string | null>(null);
+
+  const runCode = useCallback(
+    (src: string) => {
+      const result = simulate(src);
+      if (!result.ok) {
+        setRunError(result.reason ?? 'Parse error');
+        setCustomSteps(null);
+        return;
+      }
+      setRunError(null);
+      setCustomSteps(result.steps);
+      ui.setStepIndex(0);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  const steps = useMemo(
+    () => (customSteps !== null ? customSteps : caseId != null ? simulateCase(caseId).steps : []),
+    [caseId, customSteps]
+  );
   const maxIndex = Math.max(0, steps.length - 1);
 
   const ui = useUiState(maxIndex);
@@ -91,13 +140,16 @@ export function App() {
           <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontWeight: 700 }}>Example</span>
             <select
-              value={caseId}
+              value={caseId ?? ''}
               onChange={(e) => {
                 ui.setPlaying(false);
                 ui.setStepIndex(0);
-                setCaseId(Number(e.target.value) as DatasetCaseId);
+                const v = e.target.value;
+                setCaseId(v === '' ? null : (Number(v) as DatasetCaseId));
+                setCustomSteps(null);
               }}
             >
+              <option value="">— custom code —</option>
               {CASES.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.label}
@@ -115,8 +167,32 @@ export function App() {
       <div style={styles.grid}>
         <div style={styles.leftCol}>
           <div style={{ ...styles.panel, background: '#fff' }}>
-            <div style={{ fontWeight: 700, marginBottom: 8 }}>Code (por agora read-only)</div>
-            <div style={styles.monoBox}>{SNIPPETS[caseId]}</div>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Code</div>
+            <textarea
+              value={caseId === null ? code : SNIPPETS[caseId as DatasetCaseId]}
+              onChange={(e) => {
+                if (caseId !== null) setCaseId(null);
+                setCode(e.target.value);
+              }}
+              rows={14}
+              style={{
+                width: '100%',
+                fontFamily: 'ui-monospace, Menlo, Monaco, monospace',
+                fontSize: 13,
+                padding: 8,
+                boxSizing: 'border-box',
+                resize: 'vertical',
+              }}
+            />
+            <button
+              onClick={() => runCode(caseId === null ? code : SNIPPETS[caseId as DatasetCaseId])}
+              style={{ marginTop: 8 }}
+            >
+              ▶ Run
+            </button>
+            {runError && (
+              <pre style={{ color: '#c00', fontSize: 12, marginTop: 8 }}>{runError}</pre>
+            )}
           </div>
 
           <div style={{ ...styles.panel, background: '#fff' }}>
