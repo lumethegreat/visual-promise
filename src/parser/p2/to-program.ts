@@ -66,6 +66,44 @@ function buildFunctionFromHandler(
   let awaitCounter = 0;
 
   for (const st of bodyStmts) {
+    // return ...
+    if (t.isReturnStatement(st)) {
+      // return; (end handler)
+      if (!st.argument) {
+        instrs.push({
+          kind: 'end',
+          text: 'return\n→ resolve promise',
+          suppressSnapshot: true,
+          enqueueAfterSnapshot: opts?.onEndEnqueueAfterSnapshot,
+        });
+        break;
+      }
+
+      // return inner2();  (async fn declared at top-level)
+      if (t.isCallExpression(st.argument) && t.isIdentifier(st.argument.callee)) {
+        const callee = st.argument.callee.name;
+        if (!knownAsyncFns.has(callee)) {
+          throw new Error(`P2.2: return de função não suportada dentro de handler: ${callee}()`);
+        }
+        awaitCounter += 1;
+        instrs.push({
+          kind: 'awaitCallAsync',
+          text: `return ${callee}()\n→ async retorna promise\n→ só termina quando ${callee} termina`,
+          callee,
+          resumeLabel: `resume(${label})#return${awaitCounter}`,
+        });
+        instrs.push({
+          kind: 'end',
+          text: 'return\n→ resolve promise',
+          suppressSnapshot: true,
+          enqueueAfterSnapshot: opts?.onEndEnqueueAfterSnapshot,
+        });
+        break;
+      }
+
+      throw new Error(`P2.2: return não suportado dentro de handler: ${st.argument.type}`);
+    }
+
     // console.log(...)
     if (t.isExpressionStatement(st) && isConsoleLogExpr(st.expression)) {
       const call = st.expression;
@@ -122,12 +160,14 @@ function buildFunctionFromHandler(
   }
 
   // ensure explicit end
-  instrs.push({
-    kind: 'end',
-    text: 'fim',
-    suppressSnapshot: true,
-    enqueueAfterSnapshot: opts?.onEndEnqueueAfterSnapshot,
-  });
+  if (instrs.length === 0 || instrs[instrs.length - 1].kind !== 'end') {
+    instrs.push({
+      kind: 'end',
+      text: 'fim',
+      suppressSnapshot: true,
+      enqueueAfterSnapshot: opts?.onEndEnqueueAfterSnapshot,
+    });
+  }
 
   return { label, body: instrs };
 }
