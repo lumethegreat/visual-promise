@@ -35,6 +35,17 @@ export type Instr =
   | { kind: 'callAsync'; text: string; callee: Label }
   | {
       /**
+       * Chamar uma async function e, quando ela terminar, correr um callback (sem adoptar/await).
+       *
+       * Usado para modelar o padrão: inner().then(cb) como statement dentro de handlers.
+       */
+      kind: 'callAsyncThen';
+      text: string;
+      callee: Label;
+      thenHandler: Label;
+    }
+  | {
+      /**
        * await <asyncFn>()
        *
        * Semântica (subset): suspende a frame actual e só retoma quando a função async chamada terminar.
@@ -93,7 +104,13 @@ export interface Frame {
    * Quando definido, esta frame foi criada por um `await <asyncFn>()`.
    * Ao terminar (normalmente), o engine enfileira um `resume` para retomar a frame guardada.
    */
-  onReturnResume?: { label: Label; frame: { fn: Label; ip: number; justResumed: boolean } };
+  onReturnResume?: { label: Label; frame: { fn: Label; ip: number; justResumed: boolean; onReturnEnqueue?: EnqueueSpec[] } };
+
+  /**
+   * Microtasks a enfileirar quando esta frame termina (normal completion).
+   * Usado para modelar patterns tipo `inner().then(cb)` (fire-and-forget).
+   */
+  onReturnEnqueue?: EnqueueSpec[];
 }
 
 export type Microtask =

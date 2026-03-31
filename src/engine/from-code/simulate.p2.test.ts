@@ -147,6 +147,48 @@ Promise.resolve()
     if (r.ok) expect(outputs(r.steps)).toEqual(['X1', 'Z0', 'Z1', 'Y1']);
   });
 
+  it('fire-and-forget: inner2().then(Z1); console.log(Y1) => Y1,X1,T1,Z1', () => {
+    const code = `const inner2 = async () => {
+  await Promise.resolve();
+  console.log("X1");
+};
+
+Promise.resolve()
+  .then(() => {
+    inner2().then(() => console.log("Z1"));
+    console.log("Y1");
+  })
+  .then(() => console.log("T1"));
+`;
+
+    const r = simulate(code);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(outputs(r.steps)).toEqual(['Y1', 'X1', 'T1', 'Z1']);
+  });
+
+  it('fire-and-forget: inner2().then(async cb with await) => Y1,X1,T1,Z0,Z1', () => {
+    const code = `const inner2 = async () => {
+  await Promise.resolve();
+  console.log("X1");
+};
+
+Promise.resolve()
+  .then(() => {
+    inner2().then(async () => {
+      console.log("Z0");
+      await Promise.resolve();
+      console.log("Z1");
+    });
+    console.log("Y1");
+  })
+  .then(() => console.log("T1"));
+`;
+
+    const r = simulate(code);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(outputs(r.steps)).toEqual(['Y1', 'X1', 'T1', 'Z0', 'Z1']);
+  });
+
   it('handler returns inner async (subset; return inner2() behaves like awaiting for chain)', () => {
     const code = `const inner2 = async () => {
   await Promise.resolve();

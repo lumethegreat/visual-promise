@@ -29,10 +29,11 @@ function mkFrame(
   fnLabel: string,
   ip = 0,
   justResumed = false,
-  onReturnResume?: Frame['onReturnResume']
+  onReturnResume?: Frame['onReturnResume'],
+  onReturnEnqueue?: Frame['onReturnEnqueue']
 ): Frame {
   if (!program.functions[fnLabel]) throw new Error(`Missing function def: ${fnLabel}`);
-  return { fn: fnLabel, ip, justResumed, onReturnResume };
+  return { fn: fnLabel, ip, justResumed, onReturnResume, onReturnEnqueue };
 }
 
 function enqueueSpecToMicrotask(program: Program, spec: EnqueueSpec, frameForReaction?: Frame): Microtask {
@@ -88,6 +89,13 @@ function runOneInstruction(state: SimState, program: Program): 'continue' | 'yie
       enqueue(state, { kind: 'resume', label: ended.onReturnResume.label, frame: ended.onReturnResume.frame });
     }
 
+    // Fire-and-forget hooks (e.g. inner().then(cb))
+    if (ended?.onReturnEnqueue) {
+      for (const spec of ended.onReturnEnqueue) {
+        enqueue(state, enqueueSpecToMicrotask(program, spec));
+      }
+    }
+
     return 'ended';
   }
 
@@ -105,8 +113,14 @@ function runOneInstruction(state: SimState, program: Program): 'continue' | 'yie
     snapshot(state, instr.text);
 
     // suspend: pop frame and enqueue resume with continuation frame
-    // Important: preserve onReturnResume so awaited async calls can resume their awaiter after multiple awaits.
-    const cont: Frame = { fn: top.fn, ip: top.ip, justResumed: true, onReturnResume: top.onReturnResume };
+    // Important: preserve onReturnResume/onReturnEnqueue so awaited async calls can resume their awaiter after multiple awaits.
+    const cont: Frame = {
+      fn: top.fn,
+      ip: top.ip,
+      justResumed: true,
+      onReturnResume: top.onReturnResume,
+      onReturnEnqueue: top.onReturnEnqueue,
+    };
     state.callStack.pop();
     enqueue(state, { kind: 'resume', label: instr.resumeLabel, frame: cont });
 
@@ -120,11 +134,33 @@ function runOneInstruction(state: SimState, program: Program): 'continue' | 'yie
     return 'continue';
   }
 
+  if (instr.kind === 'callAsyncThen') {
+    snapshot(state, instr.text);
+
+    const thenReaction = {
+      kind: 'reaction' as const,
+      label: `reaction(${instr.thenHandler})`,
+      trigger: 'fulfilled' as const,
+      onFulfilledHandler: instr.thenHandler,
+      onRejectedHandler: undefined,
+      onFulfilled: [],
+      onRejected: [],
+    };
+
+    state.callStack.push(mkFrame(program, instr.callee, 0, false, undefined, [thenReaction]));
+    return 'continue';
+  }
+
   if (instr.kind === 'awaitCallAsync') {
     snapshot(state, instr.text);
 
     // suspend current frame (like awaitResolved)
-    const cont: { fn: string; ip: number; justResumed: boolean } = { fn: top.fn, ip: top.ip, justResumed: true };
+    const cont: { fn: string; ip: number; justResumed: boolean; onReturnEnqueue?: Frame['onReturnEnqueue'] } = {
+      fn: top.fn,
+      ip: top.ip,
+      justResumed: true,
+      onReturnEnqueue: top.onReturnEnqueue,
+    };
     state.callStack.pop();
 
     // run callee; when it ends, we'll enqueue a resume for the awaiting frame
@@ -175,6 +211,13 @@ function runOneInstruction(state: SimState, program: Program): 'continue' | 'yie
     // If this frame was created by `await <asyncFn>()`, resume the awaiting frame now.
     if (ended?.onReturnResume) {
       enqueue(state, { kind: 'resume', label: ended.onReturnResume.label, frame: ended.onReturnResume.frame });
+    }
+
+    // Fire-and-forget hooks (e.g. inner().then(cb))
+    if (ended?.onReturnEnqueue) {
+      for (const spec of ended.onReturnEnqueue) {
+        enqueue(state, enqueueSpecToMicrotask(program, spec));
+      }
     }
 
     return 'ended';

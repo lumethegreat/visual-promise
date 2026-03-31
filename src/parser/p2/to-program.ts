@@ -300,6 +300,44 @@ function buildFunctionFromHandler(
       continue;
     }
 
+    // inner().then(cb)  (fire-and-forget)
+    if (
+      t.isExpressionStatement(st) &&
+      t.isCallExpression(st.expression) &&
+      t.isMemberExpression(st.expression.callee) &&
+      t.isIdentifier(st.expression.callee.property) &&
+      st.expression.callee.property.name === 'then'
+    ) {
+      const obj = st.expression.callee.object;
+      const thenHandler = st.expression.arguments[0] as t.Expression | undefined;
+      if (!thenHandler) throw new Error('P2.2: inner().then(...) requer 1 handler.');
+
+      // object must be inner2()
+      if (!t.isCallExpression(obj) || !t.isIdentifier(obj.callee)) {
+        throw new Error('P2.2: apenas suportamos innerAsync().then(...) como statement dentro de handler.');
+      }
+
+      const callee = obj.callee.name;
+      if (!knownAsyncFns.has(callee)) {
+        throw new Error(`P2.2: .then em função não suportada dentro de handler: ${callee}()`);
+      }
+
+      if (!registerFn) {
+        throw new Error('P2.2: internal error — missing registerFn for nested .then handler');
+      }
+
+      if (!t.isArrowFunctionExpression(thenHandler) && !t.isFunctionExpression(thenHandler)) {
+        throw new Error('P2.2: handler de .then(...) não suportado (esperado function): ' + thenHandler.type);
+      }
+
+      thenCbCounter += 1;
+      const cbLabel = `${label}.then${thenCbCounter}`;
+      registerFn(cbLabel, thenHandler);
+
+      instrs.push({ kind: 'callAsyncThen', text: `${callee}().then(...)`, callee, thenHandler: cbLabel });
+      continue;
+    }
+
     // inner();  (call async fn declared at top-level)
     if (t.isExpressionStatement(st) && t.isCallExpression(st.expression) && t.isIdentifier(st.expression.callee)) {
       const callee = st.expression.callee.name;
