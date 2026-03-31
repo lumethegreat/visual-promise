@@ -35,11 +35,24 @@ export type Instr =
   | { kind: 'callAsync'; text: string; callee: Label }
   | {
       /**
+       * await <asyncFn>()
+       *
+       * Semântica (subset): suspende a frame actual e só retoma quando a função async chamada terminar.
+       */
+      kind: 'awaitCallAsync';
+      text: string;
+      callee: Label;
+      resumeLabel: Label;
+    }
+  | {
+      /**
        * Lançar erro (completion abrupto).
        * Por agora não modelamos try/catch dentro da mesma stack: o throw termina a microtask.
        */
       kind: 'throw';
       text: string;
+      /** Opcional: enfileirar microtasks após o throw (útil p/ modelar rejeições/continuações). */
+      enqueueAfterSnapshot?: EnqueueSpec[];
     }
   | {
       kind: 'end';
@@ -75,6 +88,12 @@ export interface Frame {
   ip: number;
   /** When true, the next log should be prefixed with "retoma após await". */
   justResumed: boolean;
+
+  /**
+   * Quando definido, esta frame foi criada por um `await <asyncFn>()`.
+   * Ao terminar (normalmente), o engine enfileira um `resume` para retomar a frame guardada.
+   */
+  onReturnResume?: { label: Label; frame: { fn: Label; ip: number; justResumed: boolean } };
 }
 
 export type Microtask =

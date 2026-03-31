@@ -47,7 +47,11 @@ function outputValueFromConsoleArg(arg: t.Expression | t.SpreadElement | t.JSXNa
 function buildFunctionFromHandler(
   label: string,
   handler: t.Expression,
-  knownAsyncFns: Set<string>
+  knownAsyncFns: Set<string>,
+  opts?: {
+    onEndEnqueueAfterSnapshot?: EnqueueSpec[];
+    onThrowEnqueueAfterSnapshot?: EnqueueSpec[];
+  }
 ): FunctionDef {
   // Only support arrow/function expressions.
   if (!t.isArrowFunctionExpression(handler) && !t.isFunctionExpression(handler)) {
@@ -59,6 +63,7 @@ function buildFunctionFromHandler(
     : [t.expressionStatement(handler.body)];
 
   const instrs: Instr[] = [];
+  let awaitCounter = 0;
 
   for (const st of bodyStmts) {
     // console.log(...)
@@ -69,6 +74,27 @@ function buildFunctionFromHandler(
         kind: 'log',
         text: `console.log(${arg0 ? textOfConsoleArg(arg0) : ''})`,
         output: arg0 ? outputValueFromConsoleArg(arg0) : '',
+      });
+      continue;
+    }
+
+    // await inner();  (await async fn declared at top-level)
+    if (
+      t.isExpressionStatement(st) &&
+      t.isAwaitExpression(st.expression) &&
+      t.isCallExpression(st.expression.argument) &&
+      t.isIdentifier(st.expression.argument.callee)
+    ) {
+      const callee = st.expression.argument.callee.name;
+      if (!knownAsyncFns.has(callee)) {
+        throw new Error(`P2.2: await a função não suportada dentro de handler: ${callee}()`);
+      }
+      awaitCounter += 1;
+      instrs.push({
+        kind: 'awaitCallAsync',
+        text: `await ${callee}()\n→ suspende handler\n→ retoma quando ${callee} termina`,
+        callee,
+        resumeLabel: `resume(${label})#await${awaitCounter}`,
       });
       continue;
     }
@@ -85,7 +111,7 @@ function buildFunctionFromHandler(
 
     // throw ...
     if (t.isThrowStatement(st)) {
-      instrs.push({ kind: 'throw', text: 'throw ...' });
+      instrs.push({ kind: 'throw', text: 'throw ...', enqueueAfterSnapshot: opts?.onThrowEnqueueAfterSnapshot });
       continue;
     }
 
@@ -96,7 +122,12 @@ function buildFunctionFromHandler(
   }
 
   // ensure explicit end
-  instrs.push({ kind: 'end', text: 'fim', suppressSnapshot: true });
+  instrs.push({
+    kind: 'end',
+    text: 'fim',
+    suppressSnapshot: true,
+    enqueueAfterSnapshot: opts?.onEndEnqueueAfterSnapshot,
+  });
 
   return { label, body: instrs };
 }
@@ -149,6 +180,9 @@ export function toP1ProgramFromCode(code: string): P1Program {
   const functions: Record<string, FunctionDef> = {};
   const topLevel: P1Program['topLevel'] = [];
 
+  // Track only top-level declared async functions (inner helpers callable from handlers).
+  const declaredAsyncFns = new Set<string>();
+
   let chainCounter = 0;
 
   const addChainFromExpr = (expr: t.Expression) => {
@@ -163,19 +197,12 @@ export function toP1ProgramFromCode(code: string): P1Program {
       return `${prefix}.${base}`;
     });
 
-    // Build function defs
-    const knownAsyncFns = new Set(Object.keys(functions));
-    chain.stages.forEach((stage, i) => {
-      const lbl = stageLabels[i];
-      functions[lbl] = buildFunctionFromHandler(lbl, stage.handler, knownAsyncFns);
-    });
+    // For calls/awaits inside handlers, only top-level declared async fns are allowed.
+    const knownAsyncFns = new Set(declaredAsyncFns);
 
     const mkStageReaction = (i: number, trigger: 'fulfilled' | 'rejected'): EnqueueSpec => {
       const stage = chain.stages[i];
-      const lbl = stageLabels[i];
-
-      const onFulfilledHandler = stage.kind === 'then' || stage.kind === 'finally' ? lbl : undefined;
-      const onRejectedHandler = stage.kind === 'catch' || stage.kind === 'finally' ? lbl : undefined;
+      const baseLbl = stageLabels[i];
 
       const nextIfFulfilled = i + 1 < chain.stages.length ? [mkStageReaction(i + 1, 'fulfilled')] : [];
       const nextIfRejected = i + 1 < chain.stages.length ? [mkStageReaction(i + 1, 'rejected')] : [];
@@ -183,17 +210,53 @@ export function toP1ProgramFromCode(code: string): P1Program {
       const handlerIsAsync =
         (t.isArrowFunctionExpression(stage.handler) || t.isFunctionExpression(stage.handler)) && !!stage.handler.async;
 
-      let onFulfilled: EnqueueSpec[] = nextIfFulfilled;
-      if (handlerIsAsync && onFulfilledHandler) {
-        onFulfilled = [resolveDerived('resolve-derived', 'resolve promise derivada', nextIfFulfilled)];
+      // Async finally needs distinct handler labels per trigger, because normal completion preserves the trigger.
+      const splitFinally = stage.kind === 'finally' && handlerIsAsync;
+      const fulfilledLbl = splitFinally ? `${baseLbl}.fulfilled` : baseLbl;
+      const rejectedLbl = splitFinally ? `${baseLbl}.rejected` : baseLbl;
+
+      const onFulfilledHandler = stage.kind === 'then' || stage.kind === 'finally' ? fulfilledLbl : undefined;
+      const onRejectedHandler = stage.kind === 'catch' || stage.kind === 'finally' ? rejectedLbl : undefined;
+
+      // The handler that will actually run (if any) for this microtask trigger.
+      const handlerLabel = trigger === 'fulfilled' ? onFulfilledHandler : onRejectedHandler;
+
+      // Normal completion follow-ups (note: finally preserves trigger on normal completion)
+      const normalFollowUps: EnqueueSpec[] =
+        stage.kind === 'finally' && trigger === 'rejected' ? nextIfRejected : nextIfFulfilled;
+
+      const throwFollowUps: EnqueueSpec[] = nextIfRejected;
+
+      // Build handler function def lazily (only if needed).
+      if (handlerLabel && !functions[handlerLabel]) {
+        const onEndEnqueueAfterSnapshot = handlerIsAsync
+          ? [resolveDerived('resolve-derived', 'resolve promise derivada', normalFollowUps)]
+          : undefined;
+
+        const onThrowEnqueueAfterSnapshot = handlerIsAsync
+          ? [resolveDerived('resolve-derived', 'reject promise derivada', throwFollowUps)]
+          : undefined;
+
+        functions[handlerLabel] = buildFunctionFromHandler(handlerLabel, stage.handler, knownAsyncFns, {
+          onEndEnqueueAfterSnapshot,
+          onThrowEnqueueAfterSnapshot,
+        });
       }
 
+      // Passthrough follow-ups (when no handler applies)
+      const passthroughFulfilled = nextIfFulfilled;
+      const passthroughRejected = nextIfRejected;
+
+      // For async handlers, the continuation is scheduled by the handler itself (on end/throw).
+      const onFulfilled = handlerIsAsync && handlerLabel ? [] : handlerLabel ? normalFollowUps : passthroughFulfilled;
+      const onRejected = handlerIsAsync && handlerLabel ? [] : handlerLabel ? throwFollowUps : passthroughRejected;
+
       return reaction(
-        `reaction(${lbl})`,
+        `reaction(${baseLbl})`,
         trigger,
         { onFulfilledHandler, onRejectedHandler },
         onFulfilled,
-        nextIfRejected
+        onRejected
       );
     };
 
@@ -270,6 +333,7 @@ export function toP1ProgramFromCode(code: string): P1Program {
     }
 
     functions[name] = { label: name, body: instrs };
+    declaredAsyncFns.add(name);
   };
 
   // Pass 1: collect async function decls and async arrow const decls
