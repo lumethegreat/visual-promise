@@ -38,6 +38,40 @@ Promise.resolve().then(() => console.log("B1"));
     if (r.ok) expect(outputs(r.steps)).toEqual(['A1', 'B1']);
   });
 
+  it('realistic snippet: const p1 + named handlers + innerTask multiple awaits (subset)', () => {
+    const code = `const p1 = Promise.resolve();
+
+const innerTask = async () => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  console.log('innerTask');
+}
+
+const task1 = async () => {
+  console.log('task1');
+
+  innerTask();
+}
+
+const task2 = () => {
+  console.log('task2')
+}
+
+const task3 = async () => {
+  console.log('task3');
+}
+
+p1.then(task1).then(task2).then(task3);
+`;
+
+    const r = simulate(code);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(outputs(r.steps)).toEqual(['task1', 'task2', 'task3', 'innerTask']);
+  });
+
   it('async function with multiple awaits (subset)', () => {
     const code = `async function f2() {
   console.log("A");

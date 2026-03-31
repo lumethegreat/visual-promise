@@ -373,9 +373,13 @@ function buildFunctionFromHandler(
   return { label, body: instrs };
 }
 
-function unwrapChain(expr: t.Expression): { root: 'resolve' | 'reject'; stages: ChainStage[] } | null {
+function unwrapChain(
+  expr: t.Expression,
+  resolveRoot: (base: t.Expression) => 'resolve' | 'reject' | null
+): { root: 'resolve' | 'reject'; stages: ChainStage[] } | null {
   // Expect something like:
   // Promise.resolve().then(...).catch(...).finally(...)
+  // OR p1.then(...)
   // represented as nested CallExpressions.
 
   const stages: ChainStage[] = [];
@@ -395,12 +399,10 @@ function unwrapChain(expr: t.Expression): { root: 'resolve' | 'reject'; stages: 
     cur = cur.callee.object as t.Expression;
   }
 
-  // root must be Promise.resolve(...) or Promise.reject(...)
-  if (!t.isCallExpression(cur)) return null;
-  if (isPromiseResolveCall(cur)) return { root: 'resolve', stages: stages.reverse() };
-  if (isPromiseRejectCall(cur)) return { root: 'reject', stages: stages.reverse() };
+  const root = resolveRoot(cur);
+  if (!root) return null;
 
-  return null;
+  return { root, stages: stages.reverse() };
 }
 
 /**
@@ -424,11 +426,39 @@ export function toP1ProgramFromCode(code: string): P1Program {
   // Track only top-level declared async functions (inner helpers callable from handlers).
   const declaredAsyncFns = new Set<string>();
 
+  // All top-level function-like declarations (sync or async) usable as Promise handlers.
+  const declaredFnExprs: Record<string, t.Expression> = {};
+
+  // Track simple promise variables: const p1 = Promise.resolve() / Promise.reject()
+  const declaredPromiseVars: Record<string, 'resolve' | 'reject'> = {};
+
   let chainCounter = 0;
 
+  const resolveHandlerExpr = (expr: t.Expression): t.Expression => {
+    if (t.isIdentifier(expr)) {
+      const found = declaredFnExprs[expr.name];
+      if (!found) {
+        throw new Error(`P2.2: handler por Identifier não suportado/ desconhecido: ${expr.name}`);
+      }
+      return found;
+    }
+    return expr;
+  };
+
   const addChainFromExpr = (expr: t.Expression) => {
-    const chain = unwrapChain(expr);
-    if (!chain) throw new Error('P2.2: expressão não reconhecida como chain Promise.resolve/reject.');
+    const chain = unwrapChain(expr, (base) => {
+      // root must be Promise.resolve/reject OR an identifier bound to one.
+      if (t.isCallExpression(base)) {
+        if (isPromiseResolveCall(base)) return 'resolve';
+        if (isPromiseRejectCall(base)) return 'reject';
+        return null;
+      }
+      if (t.isIdentifier(base)) {
+        return declaredPromiseVars[base.name] ?? null;
+      }
+      return null;
+    });
+    if (!chain) throw new Error('P2.2: expressão não reconhecida como chain (Promise.resolve/reject ou var).');
 
     chainCounter += 1;
     const prefix = `c${chainCounter}`;
@@ -441,17 +471,20 @@ export function toP1ProgramFromCode(code: string): P1Program {
     // For calls/awaits inside handlers, only top-level declared async fns are allowed.
     const knownAsyncFns = new Set(declaredAsyncFns);
 
+    // Resolve Identifier handlers (e.g. p1.then(task1)) to their declared function expressions.
+    const resolvedStages = chain.stages.map((s) => ({ ...s, handler: resolveHandlerExpr(s.handler) }));
+
     const registerFn = (lbl: string, h: t.Expression) => {
       if (functions[lbl]) return;
       functions[lbl] = buildFunctionFromHandler(lbl, h, knownAsyncFns, undefined, registerFn);
     };
 
     const mkStageReaction = (i: number, trigger: 'fulfilled' | 'rejected'): EnqueueSpec => {
-      const stage = chain.stages[i];
+      const stage = resolvedStages[i];
       const baseLbl = stageLabels[i];
 
-      const nextIfFulfilled = i + 1 < chain.stages.length ? [mkStageReaction(i + 1, 'fulfilled')] : [];
-      const nextIfRejected = i + 1 < chain.stages.length ? [mkStageReaction(i + 1, 'rejected')] : [];
+      const nextIfFulfilled = i + 1 < resolvedStages.length ? [mkStageReaction(i + 1, 'fulfilled')] : [];
+      const nextIfRejected = i + 1 < resolvedStages.length ? [mkStageReaction(i + 1, 'rejected')] : [];
 
       const handlerIsAsync =
         (t.isArrowFunctionExpression(stage.handler) || t.isFunctionExpression(stage.handler)) && !!stage.handler.async;
@@ -549,6 +582,16 @@ export function toP1ProgramFromCode(code: string): P1Program {
         continue;
       }
 
+      // inner2();  (call async fn declared at top-level)
+      if (t.isExpressionStatement(st) && t.isCallExpression(st.expression) && t.isIdentifier(st.expression.callee)) {
+        const callee = st.expression.callee.name;
+        if (!declaredAsyncFns.has(callee)) {
+          throw new Error(`P2.2: chamada a função não suportada em async function ${name}: ${callee}()`);
+        }
+        instrs.push({ kind: 'callAsync', text: `chamar ${callee}()`, callee });
+        continue;
+      }
+
       // await Promise.resolve(...)
       if (t.isExpressionStatement(st) && t.isAwaitExpression(st.expression) && isPromiseResolveCall(st.expression.argument)) {
         awaitCounter += 1;
@@ -594,17 +637,41 @@ export function toP1ProgramFromCode(code: string): P1Program {
     declaredAsyncFns.add(name);
   };
 
-  // Pass 1: collect async function decls and async arrow const decls
+  // Pass 1: collect function-like decls + async fns + simple promise vars
   for (const node of ast.program.body) {
-    if (t.isFunctionDeclaration(node) && node.id?.name && node.async) {
-      addAsyncFunctionDecl(node.id.name, node);
+    // function foo() {}
+    if (t.isFunctionDeclaration(node) && node.id?.name && node.body) {
+      const name = node.id.name;
+      const expr = t.functionExpression(null, node.params, node.body, node.generator, node.async);
+      declaredFnExprs[name] = expr;
+      addAsyncFunctionDecl(name, node);
+      continue;
     }
 
     if (t.isVariableDeclaration(node)) {
       for (const d of node.declarations) {
         if (!t.isIdentifier(d.id) || !d.init) continue;
-        if (t.isArrowFunctionExpression(d.init) && d.init.async) {
-          addAsyncFunctionDecl(d.id.name, d.init);
+        const name = d.id.name;
+
+        // const task = () => {} / async () => {}
+        if (t.isArrowFunctionExpression(d.init) || t.isFunctionExpression(d.init)) {
+          declaredFnExprs[name] = d.init;
+          if (t.isArrowFunctionExpression(d.init) && d.init.async) {
+            addAsyncFunctionDecl(name, d.init);
+          }
+          continue;
+        }
+
+        // const p1 = Promise.resolve() / Promise.reject()
+        if (t.isCallExpression(d.init)) {
+          if (isPromiseResolveCall(d.init)) {
+            declaredPromiseVars[name] = 'resolve';
+            continue;
+          }
+          if (isPromiseRejectCall(d.init)) {
+            declaredPromiseVars[name] = 'reject';
+            continue;
+          }
         }
       }
     }
@@ -632,7 +699,7 @@ export function toP1ProgramFromCode(code: string): P1Program {
       continue;
     }
 
-    // promise chain
+    // promise chain (e.g. Promise.resolve().then(...) OR p1.then(...))
     if (t.isCallExpression(expr)) {
       addChainFromExpr(expr);
       continue;
